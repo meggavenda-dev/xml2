@@ -67,10 +67,6 @@ def _get_numero_lote(root: ET.Element) -> str:
 # CONSULTA
 # ----------------------------
 def _sum_consulta(root: ET.Element) -> tuple[int, Decimal, str]:
-    """
-    Soma ans:procedimento/ans:valorProcedimento por ans:guiaConsulta.
-    Estratégia: 'consulta_valorProcedimento'
-    """
     total = Decimal('0')
     guias = root.findall('.//ans:prestadorParaOperadora/ans:loteGuias/ans:guiasTISS/ans:guiaConsulta', ANS_NS)
     for g in guias:
@@ -108,11 +104,6 @@ def _sum_itens_outras_desp(guia: ET.Element) -> Decimal:
 
 
 def _sum_componentes_valorTotal(guia: ET.Element) -> Decimal:
-    """
-    Soma componentes do bloco valorTotal da guia:
-    valorProcedimentos, valorDiarias, valorTaxasAlugueis,
-    valorMateriais, valorMedicamentos, valorGasesMedicinais
-    """
     total = Decimal('0')
     vt = guia.find('ans:valorTotal', ANS_NS)  # bloco da guia
     if vt is None:
@@ -125,12 +116,6 @@ def _sum_componentes_valorTotal(guia: ET.Element) -> Decimal:
 
 
 def _sum_sadt_guia(guia: ET.Element) -> tuple[Decimal, str]:
-    """
-    Estratégia:
-      1) Tenta ans:valorTotal/ans:valorTotalGeral (do bloco da guia).
-      2) Senão, soma ITENS (procedimentos + outras despesas).
-      3) Por último, soma COMPONENTES do valorTotal (quando existir).
-    """
     # 1) valorTotalGeral (bloco da guia, sem //)
     vt = guia.find('ans:valorTotal', ANS_NS)
     if vt is not None:
@@ -180,13 +165,6 @@ def _sum_sadt(root: ET.Element) -> tuple[int, Decimal, str]:
 # RECURSO DE GLOSA
 # ----------------------------
 def _sum_recurso(root: ET.Element) -> tuple[int, Decimal, str, str]:
-    """
-    Recurso de glosa:
-      - qtde_guias = quantidade de 'recursoGuia'
-      - valor_total = 'valorTotalRecursado' (do bloco guiaRecursoGlosa)
-      - protocolo = 'numeroProtocolo' (do bloco guiaRecursoGlosa)
-      - estratégia = 'recurso_valorTotalRecursado'
-    """
     base = './/ans:prestadorParaOperadora/ans:recursoGlosa/ans:guiaRecursoGlosa'
     qtde_guias = len(root.findall(f'{base}/ans:opcaoRecurso/ans:recursoGuia', ANS_NS))
     valor_total = _dec(_get_text(root, f'{base}/ans:valorTotalRecursado'))
@@ -250,10 +228,6 @@ def _parse_root(root: ET.Element, arquivo_nome: str) -> Dict:
 
 
 def parse_tiss_xml(source: Union[str, Path, IO[bytes]]) -> Dict:
-    """
-    Lê um XML TISS a partir de caminho (str/Path) OU arquivo (IO[bytes]/BytesIO).
-    Suporta: CONSULTA, SP-SADT e RECURSO_GLOSA.
-    """
     if hasattr(source, 'read'):  # UploadedFile/BytesIO
         try:
             if hasattr(source, 'seek'):
@@ -270,10 +244,6 @@ def parse_tiss_xml(source: Union[str, Path, IO[bytes]]) -> Dict:
 
 
 def parse_many_xmls(paths: List[Union[str, Path]]) -> List[Dict]:
-    """
-    Lê vários XMLs, retornando uma lista de dicionários (um por arquivo).
-    Em caso de erro, retorna um dict com 'erro' preenchido.
-    """
     resultados: List[Dict] = []
     for p in paths:
         try:
@@ -298,14 +268,6 @@ def parse_many_xmls(paths: List[Union[str, Path]]) -> List[Dict]:
 # Auditoria por guia (opcional)
 # ----------------------------
 def audit_por_guia(source: Union[str, Path, IO[bytes]]) -> List[Dict]:
-    """
-    Uma linha por guia:
-      - Para RECURSO: numeroGuiaOrigem, numeroGuiaOperadora, senha,
-                      codGlosaGuia, justificativa_prefix, numero_lote, protocolo.
-      - Para CONSULTA: numeroGuiaPrestador e valor (valorProcedimento).
-      - Para SADT: numeroGuiaPrestador, total_tag (valorTotalGeral),
-                   subtotais por itens e soma (procedimentos/outras).
-    """
     # Carrega XML
     if hasattr(source, 'read'):
         try:
