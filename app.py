@@ -1015,13 +1015,6 @@ with tab1:
             with col3:
                 st.caption("O Excel inclui as abas: Resumo, Agregado e Auditoria/Baixa (moeda BR).")
 
-
-with tab1:
-    # ... (seções já existentes: upload, auditoria, demonstrativo, etc.)
-    st.markdown("---")
-    xml_editor_ui()  # <<<<<<<<<< ADICIONADO
-
-
 # =========================================================
 # Pasta local (útil para rodar local/clonado)
 # =========================================================
