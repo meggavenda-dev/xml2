@@ -33,10 +33,10 @@ st.caption(f"Extrai nº do lote, protocolo (quando houver), quantidade de guias 
 tab1, tab2 = st.tabs(["Upload de XML(s)", "Ler de uma pasta local (clonada do GitHub)"])
 
 def xml_editor_ui():
+    """Editor completo de XML: upload, visualização, edição, XPath, inserção, remoção e download."""
+    
     import hashlib
     from lxml import etree
-
-    """Editor completo de XML: upload, visualização, edição, XPath, inserção, remoção e download."""
 
     st.subheader("🛠 Editor de XML (Completo)")
 
