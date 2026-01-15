@@ -403,7 +403,7 @@ with tab1:
     bcol1, bcol2, bcol3 = st.columns([1,1,2])
     with bcol1:
         add_disabled = not bool(demo_files)
-        if st.button("➕ Adicionar demonstrativo(s) ao banco", disabled=add_disabled, use_container_width=True):
+        if st.button("➕ Adicionar demonstrativo(s) ao banco", disabled=add_disabled, use_container_width=True, key="add_demo_tab1"):
             try:
                 demos = []
                 for f in demo_files:
@@ -416,7 +416,7 @@ with tab1:
             except Exception as e:
                 st.error(f"Erro ao processar demonstrativo(s): {e}")
     with bcol2:
-        if st.button("️ Limpar banco", use_container_width=True):
+        if st.button("🗑️ Limpar banco", use_container_width=True, key="clear_demo_tab1"):
             _clear_demo_bank()
             st.info("Banco limpo.")
     with bcol3:
@@ -447,6 +447,7 @@ with tab1:
             st.subheader("Resumo por arquivo (XML)")
             st.dataframe(_df_display_currency(df, ['valor_total', 'valor_glosado', 'valor_liberado']), use_container_width=True)
 
+            baixa_upload = pd.DataFrame()
             if not demo_agg_in_use.empty:
                 baixa_upload = _make_baixa_por_lote(df, demo_agg_in_use)
                 if not baixa_upload.empty:
@@ -560,26 +561,21 @@ with tab1:
                             tree.write(buffer_xml, encoding="utf-8", xml_declaration=True, pretty_print=True)
 
                             st.download_button("Baixar XML sem duplicadas", data=buffer_xml.getvalue(), file_name=f"{arquivo_base.replace('.xml','')}_sem_duplicadas.xml", mime="application/xml", key="comparar_download")
-                    
-                arquivo_escolhido = st.selectbox("Selecione um arquivo enviado", options=[r['arquivo'] for r in resultados])
-                if st.button("Gerar auditoria do arquivo selecionado", type="primary"):
-                    escolhido = next((f for f in files if f.name == arquivo_escolhido), None)
-                    if escolhido is not None:
-                        if hasattr(escolhido, "seek"):
-                            escolhido.seek(0)
-                        linhas = audit_por_guia(escolhido)
-                        df_a = pd.DataFrame(linhas)
-                        df_a_disp = df_a.copy()
-                        for c in ('total_tag', 'subtotal_itens_proc', 'subtotal_itens_outras', 'subtotal_itens'):
-                            if c in df_a_disp.columns:
-                                df_a_disp[c] = df_a_disp[c].apply(format_currency_br)
-                        st.dataframe(df_a_disp, use_container_width=True)
-                        st.download_button(
-                            "Baixar auditoria (CSV)",
-                            df_a.to_csv(index=False).encode('utf-8'),
-                            file_name=f"auditoria_{arquivo_escolhido}.csv",
-                            mime="text/csv"
-                        )
+
+            # --- Downloads também na aba Upload (espelhando a aba Pasta) ---
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.download_button(
+                    "Baixar resumo (CSV)",
+                    df.to_csv(index=False).encode('utf-8'),
+                    file_name="resumo_xml_tiss.csv",
+                    mime="text/csv",
+                    key="csv_upload"
+                )
+            with col2:
+                _download_excel_button(df, agg, baixa_upload if not baixa_upload.empty else df, "Baixar resumo (Excel .xlsx)")
+            with col3:
+                st.caption("O Excel inclui as abas: Resumo, Agregado e Auditoria/Baixa (moeda BR).")
 
 # =========================================================
 # Pasta local (útil para rodar local/clonado)
@@ -600,7 +596,7 @@ with tab2:
     lcol1, lcol2 = st.columns([1,1])
     with lcol1:
         add_disabled_local = not bool(demo_files_local)
-        if st.button("➕ Adicionar demonstrativo(s) ao banco (aba Pasta)", disabled=add_disabled_local, use_container_width=True):
+        if st.button("➕ Adicionar demonstrativo(s) ao banco (aba Pasta)", disabled=add_disabled_local, use_container_width=True, key="add_demo_tab2"):
             try:
                 demos = []
                 for f in demo_files_local:
@@ -614,11 +610,11 @@ with tab2:
             except Exception as e:
                 st.error(f"Erro ao processar demonstrativo(s): {e}")
     with lcol2:
-        if st.button("🗑️ Limpar banco (aba Pasta)", use_container_width=True):
+        if st.button("🗑️ Limpar banco (aba Pasta)", use_container_width=True, key="clear_demo_tab2"):
             _clear_demo_bank()
             st.info("Banco de demonstrativos limpo.")
 
-    if st.button("Ler pasta"):
+    if st.button("Ler pasta", key="ler_pasta"):
         p = Path(pasta)
         if not p.exists():
             st.error("Pasta não encontrada.")
@@ -684,7 +680,8 @@ with tab2:
                         "Baixar resumo (CSV)",
                         df.to_csv(index=False).encode('utf-8'),
                         file_name="resumo_xml_tiss.csv",
-                        mime="text/csv"
+                        mime="text/csv",
+                        key="csv_local"
                     )
                 with col2:
                     _download_excel_button(df, agg, baixa_local if not baixa_local.empty else df, "Baixar resumo (Excel .xlsx)")
