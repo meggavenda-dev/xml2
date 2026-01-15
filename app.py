@@ -1,5 +1,5 @@
 # file: app.py
-from __future__ import annotations
+rom __future__ import annotations
 
 import io
 import re
@@ -30,6 +30,7 @@ tab1, tab2 = st.tabs(["Upload de XML(s)", "Ler de uma pasta local (clonada do Gi
 # =========================================================
 # FORMATAÇÃO DE MOEDA (BR)
 # =========================================================
+
 def format_currency_br(val) -> str:
     """
     Converte número em string 'R$ 1.234,56'.
@@ -62,7 +63,6 @@ def _df_display_currency(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
 # Extração "lote" a partir do nome do arquivo
 # =========================================================
 _LOTE_REGEX = re.compile(r'(?i)lote\s*[-_]*\s*(\d+)')
-
 def extract_lote_from_filename(name: str) -> str | None:
     if not isinstance(name, str):
         return None
@@ -77,6 +77,7 @@ def extract_lote_from_filename(name: str) -> str | None:
 # =========================================================
 # Utils de dataframe/saída
 # =========================================================
+
 def _to_float(val) -> float:
     try:
         return float(Decimal(str(val)))
@@ -84,13 +85,6 @@ def _to_float(val) -> float:
         return 0.0
 
 def _df_format(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Garantia de tipos, colunas auxiliares e ordenação para exibição/CSV.
-    Adiciona:
-      - suspeito: qtde_guias>0 e valor_total==0
-      - lote_arquivo (+ lote_arquivo_int): extraídos do nome
-      - lote_confere: confere lote_arquivo == numero_lote
-    """
     if 'valor_total' in df.columns:
         df['valor_total'] = df['valor_total'].apply(_to_float)
 
