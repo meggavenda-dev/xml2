@@ -222,6 +222,19 @@ def xml_editor_ui():
                     )
                     st.warning("Nó removido!")
 
+    
+    st.markdown("### 🔄 Aplicar alterações gerais")
+
+    if st.button("Aplicar alterações ao XML", key="xed_apply_all_changes"):
+        st.session_state.xed_xml_bytes = etree.tostring(
+            root,
+            pretty_print=True,
+            encoding="utf-8",
+            xml_declaration=True
+        )
+        st.success("Todas as alterações foram aplicadas ao XML!")
+
+
     # ====================== DOWNLOAD FINAL ==================
     st.markdown("### 💾 Baixar XML atualizado")
 
