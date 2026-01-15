@@ -388,14 +388,11 @@ def _clear_demo_bank():
 # Helpers Auditoria (duplicidade e retorno)
 # =========================================================
 def _build_chave_guia(row: pd.Series) -> Optional[str]:
-    """Chave única por tipo: CONSULTA/SADT -> numeroGuiaPrestador; RECURSO -> numeroGuiaOrigem || numeroGuiaOperadora."""
     tipo = (row.get('tipo') or '').upper()
     if tipo in ('CONSULTA', 'SADT'):
-        v = row.get('numeroGuiaPrestador')
-        return str(v).strip() if pd.notna(v) and str(v).strip() else None
+        return str(row.get('numeroGuiaPrestador')).strip() if row.get('numeroGuiaPrestador') else None
     if tipo == 'RECURSO':
-        v = row.get('numeroGuiaOrigem') or row.get('numeroGuiaOperadora')
-        return str(v).strip() if v else None
+        return str(row.get('numeroGuiaOrigem') or row.get('numeroGuiaOperadora')).strip() if (row.get('numeroGuiaOrigem') or row.get('numeroGuiaOperadora')) else None
     return None
 
 def _parse_date_flex(s: str) -> Optional[datetime]:
@@ -409,21 +406,21 @@ def _parse_date_flex(s: str) -> Optional[datetime]:
             continue
     return None
 
+
+
 def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> pd.DataFrame:
     if df_a.empty:
         return df_a
     df = df_a.copy()
-    # Chave por guia
     df['chave_guia'] = df.apply(_build_chave_guia, axis=1)
-    # Duplicidade: procura a mesma chave em outras linhas
     df['duplicada'] = False
     df['lote_duplicado'] = ''
     df['arquivos_duplicados'] = ''
-    # Retorno
     df['retorno_no_periodo'] = False
     df['retorno_ref'] = ''
+    df['status_auditoria'] = ''
 
-    # Pre-process: map chave -> lista de (index, lote, arquivo)
+    # Mapa chave -> lista de (index, lote, arquivo)
     mapa = {}
     for idx, r in df.iterrows():
         k = r.get('chave_guia')
@@ -431,6 +428,8 @@ def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> p
             continue
         mapa.setdefault(k, []).append((idx, r.get('numero_lote', ''), r.get('arquivo', '')))
 
+
+    # Duplicidade
     for idx, r in df.iterrows():
         k = r.get('chave_guia')
         if not k or k not in mapa:
@@ -447,15 +446,14 @@ def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> p
     if prazo_retorno and prazo_retorno > 0:
         # parse dates once
         datas = {}
-        for idx, r in df.iterrows():
-            datas[idx] = _parse_date_flex((r.get('data_atendimento') or '').strip() if isinstance(r.get('data_atendimento'), str) else '')
+        for idx, r in df.iterrows():            
+            datas = {idx: _parse_date_flex((r.get('data_atendimento') or '').strip()) for idx, r in df.iterrows()}
         for idx, r in df.iterrows():
             pac = (r.get('paciente') or '').strip()
             med = (r.get('medico') or '').strip()
             d0 = datas.get(idx)
             if not pac or not med or not d0:
                 continue
-            # procurar outras linhas do mesmo paciente e médico
             candidatos = df[(df.index != idx) & (df['paciente'].fillna('').str.strip() == pac) & (df['medico'].fillna('').str.strip() == med)]
             refs = []
             for jdx, rr in candidatos.iterrows():
@@ -468,13 +466,55 @@ def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> p
                 df.at[idx, 'retorno_no_periodo'] = True
                 df.at[idx, 'retorno_ref'] = " | ".join(refs)
 
+
+        # Status Auditoria
+        for idx, r in df.iterrows():
+            status = []
+            if r['duplicada']:
+                status.append("Duplicidade")
+            if r['retorno_no_periodo']:
+                status.append("Retorno")
+            df.at[idx, 'status_auditoria'] = " + ".join(status) if status else "OK"
+
     return df
 
 # =========================================================
 # Upload
 # =========================================================
 with tab1:
-    files = st.file_uploader("Selecione um ou mais arquivos XML TISS", type=['xml'], accept_multiple_files=True)
+    files = st.file_uploader("Selecione um ou mais arquivos XML TISS", type=['xml'], accept_multiple_files=True
+    
+    if files:
+        st.subheader("🔎 Auditoria avançada")
+        prazo_retorno = st.number_input("Informe o prazo de retorno (em dias)", min_value=0, value=30, step=1)
+
+        if st.button("Gerar auditoria"):
+            todas_guias = []
+            for f in files:
+                if hasattr(f, "seek"):
+                    f.seek(0)
+                todas_guias.extend(audit_por_guia(f))
+
+            df_a = pd.DataFrame(todas_guias)
+            df_a = _annotate_duplicidade_e_retorno(df_a, prazo_retorno)
+
+
+            # Exibir colunas relevantes
+            cols_to_show = [
+                'arquivo', 'tipo', 'numero_lote', 'numeroGuiaPrestador', 'numeroGuiaOrigem', 'numeroGuiaOperadora',
+                'paciente', 'medico', 'data_atendimento',
+                'status_auditoria', 'lote_duplicado', 'retorno_ref'
+            ]
+            st.dataframe(df_a[cols_to_show], use_container_width=True)
+
+            st.download_button(
+                "Baixar Auditoria (CSV)",
+                df_a.to_csv(index=False).encode('utf-8'),
+                file_name="auditoria_completa.csv",
+                mime="text/csv"
+            )
+
+
     demo_files = st.file_uploader("Opcional: Demonstrativos (.xlsx)", type=['xlsx'], accept_multiple_files=True, key="demo_upload_tab1")
 
     st.markdown("### Banco de Demonstrativos (acumulado)")
