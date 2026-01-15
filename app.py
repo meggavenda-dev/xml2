@@ -483,8 +483,9 @@ def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> p
 # =========================================================
 # 🛠️ MÓDULO COMPLETO – EDITOR DE XML (FUNCIONANDO)
 # =========================================================
-
-def xml_editor_ui():
+with tab1:
+    st.markdown("---")
+    xml_editor_ui()
     """
     Editor de XML completo:
       ✔ Visualização formatada
@@ -1014,6 +1015,14 @@ with tab1:
                 _download_excel_button(df, agg, baixa_upload if not baixa_upload.empty else df, "Baixar resumo (Excel .xlsx)")
             with col3:
                 st.caption("O Excel inclui as abas: Resumo, Agregado e Auditoria/Baixa (moeda BR).")
+
+
+with tab1:
+    st.markdown("---")
+    xml_editor_ui()
+
+
+
 
 # =========================================================
 # Pasta local (útil para rodar local/clonado)
