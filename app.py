@@ -32,8 +32,10 @@ st.caption(f"Extrai nº do lote, protocolo (quando houver), quantidade de guias 
 
 tab1, tab2 = st.tabs(["Upload de XML(s)", "Ler de uma pasta local (clonada do GitHub)"])
 
-
 def xml_editor_ui():
+    import hashlib
+    from lxml import etree
+
     """Editor completo de XML: upload, visualização, edição, XPath, inserção, remoção e download."""
 
     st.subheader("🛠 Editor de XML (Completo)")
@@ -126,15 +128,30 @@ def xml_editor_ui():
         st.error(f"Erro ao carregar XML atual: {e}")
         return
 
+
+
+    # Quando o usuário clicar em "Buscar", guardamos apenas os parâmetros da busca
     if st.button("Buscar nós via XPath", key="xed_search_nodes"):
+        st.session_state["xed_last_xpath"] = xpath
+        st.session_state["xed_last_ns_text"] = ns_text
+        st.session_state["xed_search_active"] = True
+
+    # Reconstituímos os nós SEMPRE a partir do root atual
+    nodes = []
+    if st.session_state.get("xed_search_active"):
         try:
-            st.session_state["xed_nodes"] = root.xpath(xpath, namespaces=namespaces)
+            ns_saved_text = st.session_state.get("xed_last_ns_text", "")
+            ns_saved = dict(line.split("=", 1) for line in ns_saved_text.splitlines() if "=" in line)
+            last_xpath = st.session_state.get("xed_last_xpath", "")
+            nodes = root.xpath(last_xpath, namespaces=ns_saved) if last_xpath else []
         except Exception as e:
             st.error(f"Erro de XPath: {e}")
-            st.session_state["xed_nodes"] = []
+            st.session_state["xed_search_active"] = False
+            nodes = []
 
-    nodes = st.session_state.get("xed_nodes", [])
     st.write(f"Nós encontrados: **{len(nodes)}**")
+
+
 
     # ====================== EDIÇÃO DE NÓS ==================
     for idx, node in enumerate(nodes):
@@ -667,7 +684,6 @@ def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> p
 
     return df
 
-
 # =========================================================
 # Upload
 # =========================================================
@@ -1010,7 +1026,9 @@ with tab1:
                 st.caption("O Excel inclui as abas: Resumo, Agregado e Auditoria/Baixa (moeda BR).")
 
 
-
+with tab1:
+    st.markdown("---")
+    xml_editor_ui()
 # =========================================================
 # Pasta local (útil para rodar local/clonado)
 # =========================================================
