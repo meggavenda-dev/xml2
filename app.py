@@ -150,95 +150,95 @@ def xml_editor_ui():
   
 # ====================== EDIÇÃO DE NÓS (FORM + XPATH ABSOLUTO) ======================
 
-for idx, node in enumerate(nodes):
-    path_abs = node.getroottree().getpath(node)
+    for idx, node in enumerate(nodes):
+        path_abs = node.getroottree().getpath(node)
 
-    with st.expander(f"Nó {idx+1}: {node.tag} — {path_abs}"):
+        with st.expander(f"Nó {idx+1}: {node.tag} — {path_abs}"):
 
-        with st.form(key=f"xed_form_{idx}"):
+            with st.form(key=f"xed_form_{idx}"):
 
-            # Texto
-            new_text = st.text_input(
-                "Texto do nó:",
-                value=node.text or "",
-                key=f"xed_text_{idx}"
-            )
-
-            # Atributos
-            attrs = "\n".join(f"{k}={v}" for k, v in node.attrib.items())
-            new_attrs = st.text_area(
-                "Atributos (k=v):",
-                value=attrs,
-                height=120,
-                key=f"xed_attrs_{idx}"
-            )
-
-            # Filhos
-            child_tag = st.text_input("Tag do filho:", key=f"xed_child_tag_{idx}")
-            child_text = st.text_input("Texto do filho:", key=f"xed_child_text_{idx}")
-            child_attrs = st.text_area("Atributos do filho:", "", key=f"xed_child_attrs_{idx}", height=100)
-
-            col1, col2, col3 = st.columns([1,1,1])
-            save_btn = col1.form_submit_button("💾 Salvar este nó")
-            add_btn  = col2.form_submit_button("➕ Adicionar filho")
-            del_btn  = col3.form_submit_button("🗑️ Excluir")
-
-            if save_btn or add_btn or del_btn:
-                # Reparse atual
-                parser2 = etree.XMLParser(remove_blank_text=True)
-                root2 = etree.fromstring(st.session_state.xed_xml_bytes, parser=parser2)
-
-                # Reconstituir namespaces
-                ns_saved = dict(
-                    line.split("=", 1)
-                    for line in st.session_state.get("xed_last_ns", "").splitlines()
-                    if "=" in line
+                # Texto
+                new_text = st.text_input(
+                    "Texto do nó:",
+                    value=node.text or "",
+                    key=f"xed_text_{idx}"
                 )
 
-                # Reencontrar nó exato
-                target_list = root2.xpath(path_abs, namespaces=ns_saved)
-                target = target_list[0] if target_list else None
+                # Atributos
+                attrs = "\n".join(f"{k}={v}" for k, v in node.attrib.items())
+                new_attrs = st.text_area(
+                    "Atributos (k=v):",
+                    value=attrs,
+                    height=120,
+                    key=f"xed_attrs_{idx}"
+                )
 
-                if target is None:
-                    st.error("Nó não encontrado no XML atual.")
-                else:
-                    if save_btn:
-                        target.text = new_text
-                        target.attrib.clear()
-                        for line in new_attrs.splitlines():
-                            if "=" in line:
-                                k, v = line.split("=", 1)
-                                target.set(k.strip(), v.strip())
+                # Filhos
+                child_tag = st.text_input("Tag do filho:", key=f"xed_child_tag_{idx}")
+                child_text = st.text_input("Texto do filho:", key=f"xed_child_text_{idx}")
+                child_attrs = st.text_area("Atributos do filho:", "", key=f"xed_child_attrs_{idx}", height=100)
 
-                    if add_btn:
-                        if ":" in child_tag:
-                            pref, local = child_tag.split(":", 1)
-                            uri = ns_saved.get(pref)
-                            if not uri:
-                                st.error(f"Prefixo '{pref}' não encontrado.")
-                            else:
-                                tag_q = f"{{{uri}}}{local}"
-                        else:
-                            tag_q = child_tag
+                col1, col2, col3 = st.columns([1,1,1])
+                save_btn = col1.form_submit_button("💾 Salvar este nó")
+                add_btn  = col2.form_submit_button("➕ Adicionar filho")
+                del_btn  = col3.form_submit_button("🗑️ Excluir")
 
-                        c = etree.SubElement(target, tag_q)
-                        c.text = child_text or ""
-                        for line in child_attrs.splitlines():
-                            if "=" in line:
-                                k, v = line.split("=", 1)
-                                c.set(k.strip(), v.strip())
+                if save_btn or add_btn or del_btn:
+                    # Reparse atual
+                    parser2 = etree.XMLParser(remove_blank_text=True)
+                    root2 = etree.fromstring(st.session_state.xed_xml_bytes, parser=parser2)
 
-                    if del_btn:
-                        parent = target.getparent()
-                        if parent is not None:
-                            parent.remove(target)
-
-                    # Salvar no session_state
-                    st.session_state.xed_xml_bytes = etree.tostring(
-                        root2, pretty_print=True, encoding="utf-8", xml_declaration=True
+                    # Reconstituir namespaces
+                    ns_saved = dict(
+                        line.split("=", 1)
+                        for line in st.session_state.get("xed_last_ns", "").splitlines()
+                        if "=" in line
                     )
-                    st.success("Alteração aplicada!")
-                    st.rerun()
+
+                    # Reencontrar nó exato
+                    target_list = root2.xpath(path_abs, namespaces=ns_saved)
+                    target = target_list[0] if target_list else None
+
+                    if target is None:
+                        st.error("Nó não encontrado no XML atual.")
+                    else:
+                        if save_btn:
+                            target.text = new_text
+                            target.attrib.clear()
+                            for line in new_attrs.splitlines():
+                                if "=" in line:
+                                    k, v = line.split("=", 1)
+                                    target.set(k.strip(), v.strip())
+
+                        if add_btn:
+                            if ":" in child_tag:
+                                pref, local = child_tag.split(":", 1)
+                                uri = ns_saved.get(pref)
+                                if not uri:
+                                    st.error(f"Prefixo '{pref}' não encontrado.")
+                                else:
+                                    tag_q = f"{{{uri}}}{local}"
+                            else:
+                                tag_q = child_tag
+
+                            c = etree.SubElement(target, tag_q)
+                            c.text = child_text or ""
+                            for line in child_attrs.splitlines():
+                                if "=" in line:
+                                    k, v = line.split("=", 1)
+                                    c.set(k.strip(), v.strip())
+
+                        if del_btn:
+                            parent = target.getparent()
+                            if parent is not None:
+                                parent.remove(target)
+
+                        # Salvar no session_state
+                        st.session_state.xed_xml_bytes = etree.tostring(
+                            root2, pretty_print=True, encoding="utf-8", xml_declaration=True
+                        )
+                        st.success("Alteração aplicada!")
+                        st.rerun()
 
    
  # ====================== DOWNLOAD FINAL ======================
