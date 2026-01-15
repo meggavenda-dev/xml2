@@ -241,7 +241,7 @@ for idx, node in enumerate(nodes):
                     st.rerun()
 
    
- ====================== DOWNLOAD FINAL ======================
+ # ====================== DOWNLOAD FINAL ======================
 st.markdown("### 💾 Baixar XML atualizado")
 
 new_hash = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
