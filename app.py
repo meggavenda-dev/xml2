@@ -481,8 +481,9 @@ def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> p
 # 🛠️ MÓDULO COMPLETO – EDITOR DE XML (FUNCIONANDO)
 # =========================================================
 with tab1:
-    
+    st.markdown("---")
     xml_editor_ui()
+
     """
     Editor de XML completo:
       ✔ Visualização formatada
