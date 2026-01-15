@@ -674,27 +674,6 @@ def xml_editor_ui():
         key="xed_dl"
     )
 
-
-    # =====================================================
-    # Download do XML + Hash
-    # =====================================================
-    st.markdown("---")
-    st.markdown("#### 💾 Salvar / Baixar XML corrigido")
-    try:
-        new_hash = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
-        st.caption(f"Hash SHA‑256 (atualizado): `{new_hash}`")
-    except Exception:
-        st.warning("Não foi possível calcular o hash do XML atual.")
-
-    st.download_button(
-        "Baixar XML corrigido",
-        data=st.session_state.xed_xml_bytes,
-        file_name=st.session_state.xed_filename or "xml_corrigido.xml",
-        mime="application/xml",
-        key="xed_download_btn"
-    )
-
-
 # =========================================================
 # Upload
 # =========================================================
