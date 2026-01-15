@@ -408,6 +408,7 @@ def _parse_date_flex(s: str) -> Optional[datetime]:
 
 
 
+
 def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> pd.DataFrame:
     if df_a.empty:
         return df_a
@@ -420,64 +421,60 @@ def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> p
     df['retorno_ref'] = ''
     df['status_auditoria'] = ''
 
-    # Mapa chave -> lista de (index, lote, arquivo)
+    # Mapa de duplicidade
     mapa = {}
-    for idx, r in df.iterrows():
+    for i, r in df.iterrows():
         k = r.get('chave_guia')
         if not k:
             continue
-        mapa.setdefault(k, []).append((idx, r.get('numero_lote', ''), r.get('arquivo', '')))
+        mapa.setdefault(k, []).append((i, r.get('numero_lote', ''), r.get('arquivo', '')))
 
-
-    # Duplicidade
-    for idx, r in df.iterrows():
+    # Marcar duplicadas
+    for i, r in df.iterrows():
         k = r.get('chave_guia')
         if not k or k not in mapa:
             continue
-        outros = [(i, lote, arq) for (i, lote, arq) in mapa[k] if i != idx]
+        outros = [(j, lote, arq) for (j, lote, arq) in mapa[k] if j != i]
         if outros:
-            df.at[idx, 'duplicada'] = True
+            df.at[i, 'duplicada'] = True
             lotes = sorted({o[1] for o in outros if o[1]})
             arquivos = sorted({o[2] for o in outros if o[2]})
-            df.at[idx, 'lote_duplicado'] = ",".join(lotes)
-            df.at[idx, 'arquivos_duplicados'] = ",".join(arquivos)
+            df.at[i, 'lote_duplicado'] = ",".join(lotes)
+            df.at[i, 'arquivos_duplicados'] = ",".join(arquivos)
 
-    # Retorno no período: paciente + médico + data
+    # Datas (calcular UMA vez)
+    datas = {i: _parse_date_flex((str(r.get('data_atendimento') or '').strip())) for i, r in df.iterrows()}
+
+    # Retorno no período
     if prazo_retorno and prazo_retorno > 0:
-        # parse dates once
-        datas = {}
-        for idx, r in df.iterrows():            
-            datas = {idx: _parse_date_flex((r.get('data_atendimento') or '').strip()) for idx, r in df.iterrows()}
-        for idx, r in df.iterrows():
+        for i, r in df.iterrows():
             pac = (r.get('paciente') or '').strip()
             med = (r.get('medico') or '').strip()
-            d0 = datas.get(idx)
+            d0 = datas.get(i)
             if not pac or not med or not d0:
                 continue
-            candidatos = df[(df.index != idx) & (df['paciente'].fillna('').str.strip() == pac) & (df['medico'].fillna('').str.strip() == med)]
+            candidatos = df[(df.index != i) & (df['paciente'].fillna('').str.strip() == pac) & (df['medico'].fillna('').str.strip() == med)]
             refs = []
-            for jdx, rr in candidatos.iterrows():
-                dj = datas.get(jdx)
+            for j, rr in candidatos.iterrows():
+                dj = datas.get(j)
                 if not dj:
                     continue
                 if abs((d0 - dj).days) <= prazo_retorno:
                     refs.append(f"{rr.get('numero_lote','')}@{rr.get('arquivo','')}@{(rr.get('data_atendimento') or '')}")
             if refs:
-                df.at[idx, 'retorno_no_periodo'] = True
-                df.at[idx, 'retorno_ref'] = " | ".join(refs)
+                df.at[i, 'retorno_no_periodo'] = True
+                df.at[i, 'retorno_ref'] = " | ".join(refs)
 
-
-        # Status Auditoria
-        for idx, r in df.iterrows():
-            status = []
-            if r['duplicada']:
-                status.append("Duplicidade")
-            if r['retorno_no_periodo']:
-                status.append("Retorno")
-            df.at[idx, 'status_auditoria'] = " + ".join(status) if status else "OK"
+    # Status
+    for i, r in df.iterrows():
+        status = []
+        if r['duplicada']:
+            status.append("Duplicidade")
+        if r['retorno_no_periodo']:
+            status.append("Retorno")
+        df.at[i, 'status_auditoria'] = " + ".join(status) if status else "OK"
 
     return df
-
 
 
 # =========================================================
@@ -1017,12 +1014,10 @@ with tab1:
                 st.caption("O Excel inclui as abas: Resumo, Agregado e Auditoria/Baixa (moeda BR).")
 
 
+
 with tab1:
-  
+    st.markdown("---")
     xml_editor_ui()
-
-
-
 
 # =========================================================
 # Pasta local (útil para rodar local/clonado)
