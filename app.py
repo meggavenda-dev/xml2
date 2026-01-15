@@ -29,6 +29,194 @@ st.caption(f"Extrai nº do lote, protocolo (quando houver), quantidade de guias 
 
 tab1, tab2 = st.tabs(["Upload de XML(s)", "Ler de uma pasta local (clonada do GitHub)"])
 
+
+def xml_editor_ui():
+    """Editor completo de XML: upload, visualização, edição, XPath, inserção, remoção e download."""
+
+    st.subheader("🛠 Editor de XML (Completo)")
+
+    # ====================== ESTADO =========================
+    if "xed_xml_bytes" not in st.session_state:
+        st.session_state.xed_xml_bytes = b""
+
+    if "xed_filename" not in st.session_state:
+        st.session_state.xed_filename = "xml_corrigido.xml"
+
+    # ====================== UPLOAD =========================
+    up = st.file_uploader("Carregar XML para edição", type=["xml"], key="xed_uploader")
+    if up:
+        up.seek(0)
+        st.session_state.xed_xml_bytes = up.read()
+        st.session_state.xed_filename = up.name
+        st.success(f"Arquivo carregado: {up.name}")
+
+    # Impede erro se nada foi carregado
+    if not st.session_state.xed_xml_bytes:
+        st.info("Envie um XML acima para editar.")
+        return
+
+    # ====================== HASH ATUAL =====================
+    current_hash = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
+    st.caption(f"Hash SHA-256 atual: `{current_hash}`")
+
+    # ====================== VISUALIZAÇÃO ===================
+    with st.expander("👁 Visualização formatada do XML", expanded=False):
+        try:
+            parser = etree.XMLParser(remove_blank_text=True)
+            root_preview = etree.fromstring(st.session_state.xed_xml_bytes, parser=parser)
+            st.text_area(
+                "XML atual:",
+                etree.tostring(root_preview, pretty_print=True, encoding="unicode"),
+                height=300,
+                key="xed_view_area"
+            )
+        except Exception as e:
+            st.error(f"Erro ao exibir XML: {e}")
+
+    # ====================== MODO DE EDIÇÃO =================
+    modo = st.radio(
+        "Modo de edição:",
+        ["Visual (XPath guiado)", "Texto (edição bruta)"],
+        horizontal=True,
+        key="xed_mode_selector"
+    )
+
+    # ====================== EDIÇÃO BRUTA ===================
+    if modo == "Texto (edição bruta)":
+        try:
+            raw_text = etree.tostring(
+                etree.fromstring(st.session_state.xed_xml_bytes),
+                pretty_print=True,
+                encoding="unicode"
+            )
+        except Exception:
+            raw_text = ""
+
+        edited = st.text_area("Edite o XML abaixo:", raw_text, height=350, key="xed_raw_editor")
+
+        if st.button("Aplicar edição bruta", key="xed_apply_raw"):
+            try:
+                root_new = etree.fromstring(edited.encode("utf-8"))
+                st.session_state.xed_xml_bytes = etree.tostring(
+                    root_new, pretty_print=True, encoding="utf-8", xml_declaration=True
+                )
+                st.success("Edição salva com sucesso!")
+            except Exception as e:
+                st.error(f"Erro no XML: {e}")
+
+        return  # encerra modo texto, não mostra modo visual ao mesmo tempo
+
+    # ====================== EDIÇÃO VIA XPATH ===============
+    st.markdown("### ✏ Edição via XPath")
+
+    ns_default = "ans=http://www.ans.gov.br/padroes/tiss/schemas"
+    ns_text = st.text_area("Namespaces (prefixo=URI):", ns_default, key="xed_ns_text")
+    namespaces = dict(line.split("=", 1) for line in ns_text.splitlines() if "=" in line)
+
+    xpath = st.text_input("XPath do nó", ".//ans:nomeBeneficiario", key="xed_xpath_input")
+
+    # Carregar árvore atual
+    parser = etree.XMLParser(remove_blank_text=True)
+    try:
+        root = etree.fromstring(st.session_state.xed_xml_bytes, parser=parser)
+    except Exception as e:
+        st.error(f"Erro ao carregar XML atual: {e}")
+        return
+
+    if st.button("Buscar nós via XPath", key="xed_search_nodes"):
+        try:
+            st.session_state["xed_nodes"] = root.xpath(xpath, namespaces=namespaces)
+        except Exception as e:
+            st.error(f"Erro de XPath: {e}")
+            st.session_state["xed_nodes"] = []
+
+    nodes = st.session_state.get("xed_nodes", [])
+    st.write(f"Nós encontrados: **{len(nodes)}**")
+
+    # ====================== EDIÇÃO DE NÓS ==================
+    for idx, node in enumerate(nodes):
+        with st.expander(f"Nó {idx+1}: {node.tag}"):
+
+            # --- Texto -------------------------------
+            txt = st.text_input("Texto do nó:", value=node.text or "", key=f"xed_node_txt_{idx}")
+
+            # --- Atributos ---------------------------
+            attrs_text = "\n".join([f"{k}={v}" for k, v in node.attrib.items()])
+            new_attrs_text = st.text_area(
+                "Atributos (chave=valor por linha):",
+                attrs_text,
+                key=f"xed_node_attrs_{idx}"
+            )
+
+            if st.button("Salvar alterações neste nó", key=f"xed_save_node_{idx}"):
+                node.text = txt
+                node.attrib.clear()
+
+                for line in new_attrs_text.splitlines():
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        node.set(k.strip(), v.strip())
+
+                st.session_state.xed_xml_bytes = etree.tostring(
+                    root, pretty_print=True, encoding="utf-8", xml_declaration=True
+                )
+                st.success("Alterações aplicadas!")
+
+            # --- Adicionar filho ----------------------
+            child_tag = st.text_input("Tag do filho:", key=f"xed_child_tag_{idx}")
+            child_text = st.text_input("Texto do filho:", key=f"xed_child_text_{idx}")
+            child_attrs = st.text_area("Atributos do filho:", key=f"xed_child_attrs_{idx}")
+
+            if st.button("Adicionar filho", key=f"xed_add_child_{idx}"):
+                try:
+                    # Resolver namespace
+                    if ":" in child_tag:
+                        pref, local = child_tag.split(":", 1)
+                        uri = namespaces.get(pref)
+                        tag_qname = f"{{{uri}}}{local}"
+                    else:
+                        tag_qname = child_tag
+
+                    child = etree.SubElement(node, tag_qname)
+                    child.text = child_text
+
+                    for line in child_attrs.splitlines():
+                        if "=" in line:
+                            k, v = line.split("=", 1)
+                            child.set(k.strip(), v.strip())
+
+                    st.session_state.xed_xml_bytes = etree.tostring(
+                        root, pretty_print=True, encoding="utf-8", xml_declaration=True
+                    )
+                    st.success("Filho adicionado!")
+                except Exception as e:
+                    st.error(f"Erro ao adicionar filho: {e}")
+
+            # --- Remover nó ---------------------------
+            if st.button("Excluir nó", key=f"xed_delete_node_{idx}"):
+                parent = node.getparent()
+                if parent is not None:
+                    parent.remove(node)
+                    st.session_state.xed_xml_bytes = etree.tostring(
+                        root, pretty_print=True, encoding="utf-8", xml_declaration=True
+                    )
+                    st.warning("Nó removido!")
+
+    # ====================== DOWNLOAD FINAL ==================
+    st.markdown("### 💾 Baixar XML atualizado")
+
+    new_hash = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
+    st.caption(f"Novo hash SHA-256: `{new_hash}`")
+
+    st.download_button(
+        "Baixar XML corrigido",
+        data=st.session_state.xed_xml_bytes,
+        file_name=st.session_state.xed_filename.replace(".xml", "_corrigido.xml"),
+        mime="application/xml",
+        key="xed_download_btn"
+    )
+
+
 # =========================================================
 # FORMATAÇÃO DE MOEDA (BR)
 # =========================================================
@@ -476,191 +664,6 @@ def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> p
 
     return df
 
-
-# =========================================================
-# 🛠️ MÓDULO COMPLETO – EDITOR DE XML (FUNCIONANDO)
-# =========================================================
-with tab1:
-    st.markdown("---")
-    xml_editor_ui()
-
-    import hashlib
-    from lxml import etree
-
-    st.markdown("---")
-    st.subheader("🛠 Editor de XML (Completo)")
-
-    # ====================== ESTADO =========================
-    if "xed_xml_bytes" not in st.session_state:
-        st.session_state.xed_xml_bytes = b""
-
-    if "xed_filename" not in st.session_state:
-        st.session_state.xed_filename = "xml_corrigido.xml"
-
-    # ====================== UPLOAD =========================
-    up = st.file_uploader("Carregar XML para edição", type=["xml"], key="xed_up")
-    if up:
-        up.seek(0)
-        st.session_state.xed_xml_bytes = up.read()
-        st.session_state.xed_filename = up.name
-        st.success(f"Arquivo carregado: {up.name}")
-
-    if not st.session_state.xed_xml_bytes:
-        st.info("Envie um XML acima para editar.")
-        return
-
-    # ====================== HASH ATUAL =====================
-    current_hash = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
-    st.caption(f"Hash SHA-256 atual: `{current_hash}`")
-
-    # ====================== VISUALIZAÇÃO ===================
-    with st.expander("👁 Visualização formatada do XML", expanded=False):
-        try:
-            parser = etree.XMLParser(remove_blank_text=True)
-            root_preview = etree.fromstring(st.session_state.xed_xml_bytes, parser=parser)
-            st.text_area(
-                "XML atual:",
-                etree.tostring(root_preview, pretty_print=True, encoding="unicode"),
-                height=300,
-                key="xed_view"
-            )
-        except Exception as e:
-            st.error(f"Erro ao exibir XML: {e}")
-
-    # ====================== MODO DE EDIÇÃO =================
-    modo = st.radio(
-        "Modo de edição:",
-        ["Visual (XPath guiado)", "Texto (edição bruta)"],
-        horizontal=True,
-        key="xed_mode"
-    )
-
-    # ====================== EDIÇÃO BRUTA ===================
-    if modo == "Texto (edição bruta)":
-        raw_text = st.text_area(
-            "Edite o XML abaixo:",
-            etree.tostring(
-                etree.fromstring(st.session_state.xed_xml_bytes),
-                pretty_print=True, encoding="unicode"
-            ),
-            height=350,
-            key="xed_raw"
-        )
-
-        if st.button("Aplicar edição bruta"):
-            try:
-                root_new = etree.fromstring(raw_text.encode("utf-8"))
-                st.session_state.xed_xml_bytes = etree.tostring(
-                    root_new, pretty_print=True, encoding="utf-8", xml_declaration=True
-                )
-                st.success("Edição salva com sucesso!")
-            except Exception as e:
-                st.error(f"Erro no XML: {e}")
-
-        return  # Não mostrar o modo visual ao mesmo tempo
-
-    # ====================== EDIÇÃO VISUAL/XPATH ============
-    st.markdown("### ✏ Edição via XPath")
-    ns_default = "ans=http://www.ans.gov.br/padroes/tiss/schemas"
-    ns_text = st.text_area("Namespaces", ns_default, key="xed_ns")
-    namespaces = dict(line.split("=", 1) for line in ns_text.splitlines() if "=" in line)
-
-    xpath = st.text_input("XPath do nó", ".//ans:nomeBeneficiario", key="xed_xpath")
-
-    # Carregar árvore
-    parser = etree.XMLParser(remove_blank_text=True)
-    root = etree.fromstring(st.session_state.xed_xml_bytes, parser=parser)
-
-    if st.button("Buscar nós via XPath"):
-        try:
-            st.session_state["xed_nodes_found"] = root.xpath(xpath, namespaces=namespaces)
-        except Exception as e:
-            st.error(f"Erro de XPath: {e}")
-            st.session_state["xed_nodes_found"] = []
-
-    nodes = st.session_state.get("xed_nodes_found", [])
-
-    st.write(f"Nós encontrados: {len(nodes)}")
-
-    for idx, node in enumerate(nodes):
-        with st.expander(f"Nó {idx+1}: {node.tag}"):
-
-            # --- Texto ---
-            txt = st.text_input("Texto do nó:", value=node.text or "", key=f"xed_txt{idx}")
-
-            # --- Atributos ---
-            attrs_text = "\n".join([f"{k}={v}" for k, v in node.attrib.items()])
-            new_attrs_text = st.text_area(
-                "Atributos (chave=valor por linha):", attrs_text, key=f"xed_attrs{idx}"
-            )
-
-            # --- Aplicar mudanças ---
-            if st.button("Salvar alterações neste nó", key=f"xed_save{idx}"):
-                node.text = txt
-
-                node.attrib.clear()
-                for line in new_attrs_text.splitlines():
-                    if "=" in line:
-                        k, v = line.split("=", 1)
-                        node.set(k.strip(), v.strip())
-
-                st.session_state.xed_xml_bytes = etree.tostring(
-                    root, pretty_print=True, encoding="utf-8", xml_declaration=True
-                )
-                st.success("Alterações aplicadas!")
-
-            # --- Adicionar filho ---
-            child_tag = st.text_input("Tag do filho", key=f"xed_child_tag{idx}")
-            child_text = st.text_input("Texto do filho", key=f"xed_child_text{idx}")
-            child_attrs = st.text_area("Atributos do filho", key=f"xed_child_attrs{idx}")
-
-            if st.button("Adicionar filho", key=f"xed_addchild{idx}"):
-                try:
-                    if ":" in child_tag:
-                        pref, local = child_tag.split(":")
-                        uri = namespaces.get(pref)
-                        tag_qname = f"{{{uri}}}{local}"
-                    else:
-                        tag_qname = child_tag
-
-                    child = etree.SubElement(node, tag_qname)
-                    child.text = child_text
-
-                    for line in child_attrs.splitlines():
-                        if "=" in line:
-                            k, v = line.split("=")
-                            child.set(k.strip(), v.strip())
-
-                    st.session_state.xed_xml_bytes = etree.tostring(
-                        root, pretty_print=True, encoding="utf-8", xml_declaration=True
-                    )
-                    st.success("Filho adicionado!")
-                except Exception as e:
-                    st.error(f"Erro ao adicionar filho: {e}")
-
-            # --- Remover nó ---
-            if st.button("Excluir nó", key=f"xed_delete{idx}"):
-                parent = node.getparent()
-                if parent is not None:
-                    parent.remove(node)
-
-                st.session_state.xed_xml_bytes = etree.tostring(
-                    root, pretty_print=True, encoding="utf-8", xml_declaration=True
-                )
-                st.warning("Nó removido!")
-
-    # ====================== DOWNLOAD ========================
-    st.markdown("### 💾 Baixar XML atualizado")
-    new_hash = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
-    st.caption(f"Novo hash SHA-256: `{new_hash}`")
-
-    st.download_button(
-        "Baixar XML corrigido",
-        data=st.session_state.xed_xml_bytes,
-        file_name=st.session_state.xed_filename.replace(".xml", "_corrigido.xml"),
-        mime="application/xml",
-        key="xed_dl"
-    )
 
 # =========================================================
 # Upload
