@@ -482,7 +482,7 @@ def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> p
 # Upload
 # =========================================================
 with tab1:
-    files = st.file_uploader("Selecione um ou mais arquivos XML TISS", type=['xml'], accept_multiple_files=True
+    files = st.file_uploader("Selecione um ou mais arquivos XML TISS", type=['xml'], accept_multiple_files=True)
     
     if files:
         st.subheader("🔎 Auditoria avançada")
