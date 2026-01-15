@@ -6,54 +6,43 @@ from pathlib import Path
 from typing import IO, Union, List, Dict
 import xml.etree.ElementTree as ET
 
+
 # Namespace TISS
 ANS_NS = {'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'}
-
-__version__ = "2026.01.15-ptbr-07"
-
+__version__ = "2026.01.15-ptbr-08"
 
 class TissParsingError(Exception):
-    """Erro de parsing para arquivos TISS XML."""
     pass
+
 
 
 # ----------------------------
 # Helpers
 # ----------------------------
+
 def _dec(txt: str | None) -> Decimal:
-    """
-    Converte string numérica para Decimal; vazio/None => 0.
-    Troca ',' por '.' por segurança.
-    """
     if not txt:
         return Decimal('0')
     return Decimal(txt.strip().replace(',', '.'))
 
 
+
+
 def _get_text(root_or_el: ET.Element, xpath: str) -> str:
-    """
-    Retorna texto de um xpath (com namespace TISS),
-    ou string vazia se não existir / sem texto.
-    """
     el = root_or_el.find(xpath, ANS_NS)
     return (el.text or '').strip() if el is not None and el.text else ''
 
 
+
 def _is_consulta(root: ET.Element) -> bool:
-    """True se houver guiaConsulta."""
     return root.find('.//ans:guiaConsulta', ANS_NS) is not None
 
 
 def _is_sadt(root: ET.Element) -> bool:
-    """True se houver guiaSP-SADT."""
     return root.find('.//ans:guiaSP-SADT', ANS_NS) is not None
 
 
 def _is_recurso(root: ET.Element) -> bool:
-    """
-    True se for RECURSO_GLOSA, identificado pelo tipoTransacao
-    ou pela presença de guiaRecursoGlosa.
-    """
     tipo = root.findtext('.//ans:cabecalho/ans:identificacaoTransacao/ans:tipoTransacao', namespaces=ANS_NS)
     if (tipo or '').strip().upper() == 'RECURSO_GLOSA':
         return True
@@ -61,11 +50,6 @@ def _is_recurso(root: ET.Element) -> bool:
 
 
 def _get_numero_lote(root: ET.Element) -> str:
-    """
-    Extrai numeroLote:
-      - Lote de guias (Consulta / SADT)
-      - Recurso de glosa (guiaRecursoGlosa/numeroLote)
-    """
     # 1) Consulta / SADT
     el = root.find('.//ans:prestadorParaOperadora/ans:loteGuias/ans:numeroLote', ANS_NS)
     if el is not None and el.text and el.text.strip():
