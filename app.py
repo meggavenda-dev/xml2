@@ -5,9 +5,10 @@ from __future__ import annotations
 import io
 import re
 import math
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import pandas as pd
 import streamlit as st
@@ -201,11 +202,7 @@ def _build_chave_concil(df_xml: pd.DataFrame, demo_agg: pd.DataFrame) -> pd.Data
       - numero_lote_norm: normalização do nº do lote vindo do XML
       - lote_arquivo_norm: nº do lote extraído do nome do arquivo
       - demo_lote: lote escolhido para procurar no demonstrativo
-           Regra:
-             * Para RECURSO: preferir 'lote_arquivo_norm' se existir no demonstrativo;
-                              senão, tentar heurística startswith; senão, usar numero_lote_norm/arq.
-             * Para demais:  preferir 'numero_lote_norm'; se não existir, tentar heurística startswith com 'lote_arquivo_norm'; por fim 'lote_arquivo_norm'.
-      - chave_concil: f"{demo_lote}__{tipo}"  (garante que RECURSO e FATURAMENTO não se misturem)
+      - chave_concil: f"{demo_lote}__{tipo}"
     """
     df = df_xml.copy()
     demo_keys = set(demo_agg['numero_lote'].dropna().astype(str).str.strip()) if not demo_agg.empty else set()
@@ -219,12 +216,10 @@ def _build_chave_concil(df_xml: pd.DataFrame, demo_agg: pd.DataFrame) -> pd.Data
         arq = (row.get('lote_arquivo_norm') or '').strip()
 
         if tipo == 'RECURSO':
-            # Caso do Guilherme: arquivo "LOTE 132238 Recurso ...xml" mas XML traz numeroLote=92400
             if arq and arq in demo_keys:
                 return arq
             if num and arq and num.startswith(arq) and arq in demo_keys:
                 return arq
-            # fallback
             return arq or num or None
         else:
             if num and num in demo_keys:
@@ -233,7 +228,6 @@ def _build_chave_concil(df_xml: pd.DataFrame, demo_agg: pd.DataFrame) -> pd.Data
                 return arq
             if arq and arq in demo_keys:
                 return arq
-            # fallback
             return num or arq or None
 
     df['demo_lote'] = df.apply(choose_demo_lote, axis=1)
@@ -250,8 +244,8 @@ def _make_baixa_por_lote(df_xml: pd.DataFrame, demo_agg: pd.DataFrame) -> pd.Dat
     """
     Produz tabela de baixa por lote, separando por tipo (faturamento x recurso).
     - Agrupa XML por chave_concil (demo_lote__tipo)
-    - Faz merge com Demonstrativo pelo demo_lote (mantendo competência do Demonstrativo)
-    - Calcula diffs e flags de conferência
+    - Merge com Demonstrativo por demo_lote
+    - Calcula diffs e flags
     """
     if df_xml.empty:
         return pd.DataFrame()
@@ -272,7 +266,6 @@ def _make_baixa_por_lote(df_xml: pd.DataFrame, demo_agg: pd.DataFrame) -> pd.Dat
            .reset_index()
     )
 
-    # Merge com demonstrativo preservando competência
     demo_key = demo_agg.rename(columns={'numero_lote': 'demo_lote'}).copy()
 
     baixa = xml_lote.merge(
@@ -313,7 +306,6 @@ def _download_excel_button(df_resumo: pd.DataFrame, df_agg: pd.DataFrame, df_ter
             writer, index=False, sheet_name=sheet_name_3
         )
 
-        # Formatação de moeda nas abas
         def format_currency_sheet(ws, header_row=1, currency_cols=()):
             headers = {ws.cell(row=header_row, column=c).value: c for c in range(1, ws.max_column + 1)}
             numfmt = 'R$ #,##0.00'
@@ -393,6 +385,92 @@ def _clear_demo_bank():
     st.session_state.demo_bank = st.session_state.demo_bank.iloc[0:0]
 
 # =========================================================
+# Helpers Auditoria (duplicidade e retorno)
+# =========================================================
+def _build_chave_guia(row: pd.Series) -> Optional[str]:
+    """Chave única por tipo: CONSULTA/SADT -> numeroGuiaPrestador; RECURSO -> numeroGuiaOrigem || numeroGuiaOperadora."""
+    tipo = (row.get('tipo') or '').upper()
+    if tipo in ('CONSULTA', 'SADT'):
+        v = row.get('numeroGuiaPrestador')
+        return str(v).strip() if pd.notna(v) and str(v).strip() else None
+    if tipo == 'RECURSO':
+        v = row.get('numeroGuiaOrigem') or row.get('numeroGuiaOperadora')
+        return str(v).strip() if v else None
+    return None
+
+def _parse_date_flex(s: str) -> Optional[datetime]:
+    if not s or not isinstance(s, str):
+        return None
+    s = s.strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(s, fmt)
+        except Exception:
+            continue
+    return None
+
+def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> pd.DataFrame:
+    if df_a.empty:
+        return df_a
+    df = df_a.copy()
+    # Chave por guia
+    df['chave_guia'] = df.apply(_build_chave_guia, axis=1)
+    # Duplicidade: procura a mesma chave em outras linhas
+    df['duplicada'] = False
+    df['lote_duplicado'] = ''
+    df['arquivos_duplicados'] = ''
+    # Retorno
+    df['retorno_no_periodo'] = False
+    df['retorno_ref'] = ''
+
+    # Pre-process: map chave -> lista de (index, lote, arquivo)
+    mapa = {}
+    for idx, r in df.iterrows():
+        k = r.get('chave_guia')
+        if not k:
+            continue
+        mapa.setdefault(k, []).append((idx, r.get('numero_lote', ''), r.get('arquivo', '')))
+
+    for idx, r in df.iterrows():
+        k = r.get('chave_guia')
+        if not k or k not in mapa:
+            continue
+        outros = [(i, lote, arq) for (i, lote, arq) in mapa[k] if i != idx]
+        if outros:
+            df.at[idx, 'duplicada'] = True
+            lotes = sorted({o[1] for o in outros if o[1]})
+            arquivos = sorted({o[2] for o in outros if o[2]})
+            df.at[idx, 'lote_duplicado'] = ",".join(lotes)
+            df.at[idx, 'arquivos_duplicados'] = ",".join(arquivos)
+
+    # Retorno no período: paciente + médico + data
+    if prazo_retorno and prazo_retorno > 0:
+        # parse dates once
+        datas = {}
+        for idx, r in df.iterrows():
+            datas[idx] = _parse_date_flex((r.get('data_atendimento') or '').strip() if isinstance(r.get('data_atendimento'), str) else '')
+        for idx, r in df.iterrows():
+            pac = (r.get('paciente') or '').strip()
+            med = (r.get('medico') or '').strip()
+            d0 = datas.get(idx)
+            if not pac or not med or not d0:
+                continue
+            # procurar outras linhas do mesmo paciente e médico
+            candidatos = df[(df.index != idx) & (df['paciente'].fillna('').str.strip() == pac) & (df['medico'].fillna('').str.strip() == med)]
+            refs = []
+            for jdx, rr in candidatos.iterrows():
+                dj = datas.get(jdx)
+                if not dj:
+                    continue
+                if abs((d0 - dj).days) <= prazo_retorno:
+                    refs.append(f"{rr.get('numero_lote','')}@{rr.get('arquivo','')}@{(rr.get('data_atendimento') or '')}")
+            if refs:
+                df.at[idx, 'retorno_no_periodo'] = True
+                df.at[idx, 'retorno_ref'] = " | ".join(refs)
+
+    return df
+
+# =========================================================
 # Upload
 # =========================================================
 with tab1:
@@ -464,25 +542,148 @@ with tab1:
             st.dataframe(_df_display_currency(agg, ['valor_total']), use_container_width=True)
 
             # =========================================================
-            # Auditoria por guia e Comparar/remover duplicadas (com keys únicas)
+            # 🔎 Auditoria — duplicidade com lote e retorno no período + remoção seletiva
             # =========================================================
-            with st.expander("🔎 Auditoria por guia (opcional)"):
-                arquivo_escolhido = st.selectbox("Selecione um arquivo enviado", options=[r['arquivo'] for r in resultados], key="auditoria_select")
-                if st.button("Gerar auditoria do arquivo selecionado", type="primary", key="auditoria_btn"):
-                    escolhido = next((f for f in files if f.name == arquivo_escolhido), None)
-                    if escolhido is not None:
-                        if hasattr(escolhido, "seek"):
-                            escolhido.seek(0)
-                        linhas = audit_por_guia(escolhido)
-                        df_a = pd.DataFrame(linhas)
-                        df_a_disp = df_a.copy()
-                        for c in ('total_tag', 'subtotal_itens_proc', 'subtotal_itens_outras', 'subtotal_itens'):
-                            if c in df_a_disp.columns:
-                                df_a_disp[c] = df_a_disp[c].apply(format_currency_br)
-                        st.dataframe(df_a_disp, use_container_width=True)
-                        st.download_button("Baixar auditoria (CSV)", df_a.to_csv(index=False).encode('utf-8'), file_name=f"auditoria_{arquivo_escolhido}.csv", mime="text/csv", key="auditoria_download")
+            with st.expander("🔎 Auditoria avançada (duplicidade por lote, retorno e remoção seletiva de guias)"):
+                prazo_retorno = st.number_input("Informe o prazo de retorno (em dias)", min_value=0, value=30, step=1, key="prazo_retorno_days")
 
-            with st.expander("🧩 Comparar XML e remover guias duplicadas"):
+                if st.button("Gerar auditoria (todos os XMLs enviados)", type="primary", key="auditoria_full_btn"):
+                    # Agregar auditoria de todos os arquivos enviados
+                    todas_guias = []
+                    for f in files:
+                        if hasattr(f, "seek"):
+                            f.seek(0)
+                        todas_guias.extend(audit_por_guia(f))
+
+                    df_a = pd.DataFrame(todas_guias)
+                    # Anotar duplicidade (com lote do outro) e retorno no período
+                    df_a = _annotate_duplicidade_e_retorno(df_a, prazo_retorno)
+
+                    st.dataframe(df_a, use_container_width=True)
+
+                    # Download CSV auditoria
+                    st.download_button(
+                        "Baixar Auditoria (CSV)",
+                        df_a.to_csv(index=False).encode('utf-8'),
+                        file_name="auditoria_completa.csv",
+                        mime="text/csv",
+                        key="auditoria_full_download"
+                    )
+
+                    st.markdown("---")
+                    st.markdown("### 🧽 Remover guias de um XML específico (seleção manual)")
+                    arquivo_base = st.selectbox("Selecione o arquivo base para remover guias", options=sorted(df_a['arquivo'].unique().tolist()), key="remocao_select_base")
+
+                    if arquivo_base:
+                        df_base = df_a[df_a['arquivo'] == arquivo_base].copy()
+                        # Monta rótulo amigável por linha
+                        def _row_label(r):
+                            chave = r.get('numeroGuiaPrestador') or r.get('numeroGuiaOrigem') or r.get('numeroGuiaOperadora') or ''
+                            data = (r.get('data_atendimento') or '')
+                            pac = (r.get('paciente') or '')
+                            med = (r.get('medico') or '')
+                            return f"[{r.get('tipo','')}] {chave} • {pac} • {med} • {data}"
+
+                        labels = {int(i): _row_label(r) for i, r in df_base.iterrows()}
+                        indices = list(labels.keys())
+
+                        selected_rows = st.multiselect(
+                            "Escolha as guias para remover (baseadas no arquivo selecionado)",
+                            options=indices,
+                            format_func=lambda i: labels[i],
+                            key="remocao_multiselect"
+                        )
+
+                        if st.button("Gerar novo XML sem as guias selecionadas", key="remocao_btn"):
+                            if not selected_rows:
+                                st.warning("Selecione pelo menos uma guia para remover.")
+                            else:
+                                # Remoção com lxml
+                                try:
+                                    from lxml import etree
+                                except Exception:
+                                    st.error("Dependência 'lxml' não encontrada. Instale com: pip install lxml")
+                                    st.stop()
+
+                                base_file = next((f for f in files if f.name == arquivo_base), None)
+                                if base_file is None:
+                                    st.error("Arquivo base não encontrado no upload atual.")
+                                else:
+                                    if hasattr(base_file, "seek"):
+                                        base_file.seek(0)
+                                    parser = etree.XMLParser(remove_blank_text=True)
+                                    tree = etree.parse(base_file, parser)
+                                    root = tree.getroot()
+                                    NS = {'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'}
+
+                                    # Remover por chave + tipo
+                                    df_sel = df_base.loc[selected_rows]
+                                    removed = 0
+
+                                    for _, dup in df_sel.iterrows():
+                                        tipo = dup.get('tipo')
+                                        chave = dup.get('numeroGuiaPrestador') or dup.get('numeroGuiaOrigem') or dup.get('numeroGuiaOperadora')
+                                        if not chave:
+                                            continue
+                                        if tipo == 'CONSULTA':
+                                            for guia in root.xpath('.//ans:guiaConsulta', namespaces=NS):
+                                                num = guia.find('.//ans:numeroGuiaPrestador', namespaces=NS)
+                                                if num is not None and (num.text or '').strip() == str(chave):
+                                                    guia.getparent().remove(guia)
+                                                    removed += 1
+                                        elif tipo == 'SADT':
+                                            for guia in root.xpath('.//ans:guiaSP-SADT', namespaces=NS):
+                                                num = guia.find('.//ans:cabecalhoGuia/ans:numeroGuiaPrestador', namespaces=NS)
+                                                if num is not None and (num.text or '').strip() == str(chave):
+                                                    guia.getparent().remove(guia)
+                                                    removed += 1
+                                        elif tipo == 'RECURSO':
+                                            for guia in root.xpath('.//ans:recursoGuia', namespaces=NS):
+                                                num = guia.find('.//ans:numeroGuiaOrigem', namespaces=NS)
+                                                num2 = guia.find('.//ans:numeroGuiaOperadora', namespaces=NS)
+                                                if ((num is not None and (num.text or '').strip() == str(chave)) or
+                                                    (num2 is not None and (num2.text or '').strip() == str(chave))):
+                                                    guia.getparent().remove(guia)
+                                                    removed += 1
+
+                                    buffer_xml = io.BytesIO()
+                                    tree.write(buffer_xml, encoding="utf-8", xml_declaration=True, pretty_print=True)
+
+                                    st.success(f"{removed} guia(s) removida(s) do XML '{arquivo_base}'.")
+                                    st.download_button(
+                                        "Baixar XML atualizado (sem as guias selecionadas)",
+                                        data=buffer_xml.getvalue(),
+                                        file_name=f"{Path(arquivo_base).stem}_limpo.xml",
+                                        mime="application/xml",
+                                        key="remocao_download"
+                                    )
+
+                # Auditoria por arquivo individual (mantida, caso queira ver granular)
+                st.markdown("---")
+                st.markdown("#### Auditoria por arquivo (individual)")
+                if files:
+                    arquivo_escolhido = st.selectbox("Selecione um arquivo enviado", options=[f.name for f in files], key="auditoria_individual_select")
+                    if st.button("Gerar auditoria do arquivo selecionado", type="secondary", key="auditoria_individual_btn"):
+                        escolhido = next((f for f in files if f.name == arquivo_escolhido), None)
+                        if escolhido is not None:
+                            if hasattr(escolhido, "seek"):
+                                escolhido.seek(0)
+                            linhas = audit_por_guia(escolhido)
+                            df_a_ind = pd.DataFrame(linhas)
+                            df_a_ind = _annotate_duplicidade_e_retorno(df_a_ind, prazo_retorno)
+                            st.dataframe(df_a_ind, use_container_width=True)
+                            st.download_button(
+                                "Baixar auditoria (CSV)",
+                                df_a_ind.to_csv(index=False).encode('utf-8'),
+                                file_name=f"auditoria_{arquivo_escolhido}.csv",
+                                mime="text/csv",
+                                key="auditoria_individual_download"
+                            )
+
+            # =========================================================
+            # 🧩 Comparar XML e remover guias duplicadas (modo simplificado)
+            # =========================================================
+            with st.expander("🧩 Comparar XML e remover guias duplicadas (entre arquivos)"):
                 arquivo_base = st.selectbox("Selecione o arquivo base", options=[r['arquivo'] for r in resultados], key="comparar_select")
                 if st.button("Remover guias duplicadas do arquivo base", type="primary", key="comparar_btn"):
                     base_file = next((f for f in files if f.name == arquivo_base), None)
@@ -533,25 +734,26 @@ with tab1:
                             root = tree.getroot()
 
                             def remover_guias(root, duplicadas):
+                                NS = {'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'}
                                 for dup in duplicadas:
                                     tipo = dup['tipo']
                                     chave = dup.get('numeroGuiaPrestador') or dup.get('numeroGuiaOrigem') or dup.get('numeroGuiaOperadora')
                                     if not chave:
                                         continue
                                     if tipo == 'CONSULTA':
-                                        for guia in root.xpath('.//ans:guiaConsulta', namespaces={'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'}):
-                                            num = guia.find('.//ans:numeroGuiaPrestador', namespaces={'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'})
+                                        for guia in root.xpath('.//ans:guiaConsulta', namespaces=NS):
+                                            num = guia.find('.//ans:numeroGuiaPrestador', namespaces=NS)
                                             if num is not None and (num.text or '').strip() == chave:
                                                 guia.getparent().remove(guia)
                                     elif tipo == 'SADT':
-                                        for guia in root.xpath('.//ans:guiaSP-SADT', namespaces={'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'}):
-                                            num = guia.find('.//ans:cabecalhoGuia/ans:numeroGuiaPrestador', namespaces={'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'})
+                                        for guia in root.xpath('.//ans:guiaSP-SADT', namespaces=NS):
+                                            num = guia.find('.//ans:cabecalhoGuia/ans:numeroGuiaPrestador', namespaces=NS)
                                             if num is not None and (num.text or '').strip() == chave:
                                                 guia.getparent().remove(guia)
                                     elif tipo == 'RECURSO':
-                                        for guia in root.xpath('.//ans:recursoGuia', namespaces={'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'}):
-                                            num = guia.find('.//ans:numeroGuiaOrigem', namespaces={'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'})
-                                            num2 = guia.find('.//ans:numeroGuiaOperadora', namespaces={'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'})
+                                        for guia in root.xpath('.//ans:recursoGuia', namespaces=NS):
+                                            num = guia.find('.//ans:numeroGuiaOrigem', namespaces=NS)
+                                            num2 = guia.find('.//ans:numeroGuiaOperadora', namespaces=NS)
                                             if ((num is not None and (num.text or '').strip() == chave) or (num2 is not None and (num2.text or '').strip() == chave)):
                                                 guia.getparent().remove(guia)
                                 return root
