@@ -484,17 +484,6 @@ with tab1:
     st.markdown("---")
     xml_editor_ui()
 
-    """
-    Editor de XML completo:
-      ✔ Visualização formatada
-      ✔ Edição via XPath (texto + atributos)
-      ✔ Adicionar filho
-      ✔ Excluir nó
-      ✔ Edição bruta via texto
-      ✔ Salvamento correto no session_state
-      ✔ Download com hash SHA-256 atualizado
-    """
-
     import hashlib
     from lxml import etree
 
