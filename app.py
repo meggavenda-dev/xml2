@@ -32,11 +32,6 @@ tab1, tab2 = st.tabs(["Upload de XML(s)", "Ler de uma pasta local (clonada do Gi
 # =========================================================
 
 def format_currency_br(val) -> str:
-    """
-    Converte número em string 'R$ 1.234,56'.
-    - Valores None/NaN/Inf/Inválidos -> 'R$ 0,00'
-    - Mantém sinal negativo com prefixo '-'
-    """
     try:
         v = float(Decimal(str(val)))
     except Exception:
@@ -135,7 +130,6 @@ def _make_agg(df: pd.DataFrame) -> pd.DataFrame:
 # Leitura do Demonstrativo de Pagamento (.xlsx)
 # =========================================================
 def _norm_lote(v) -> str | None:
-    """Normaliza 'Lote' para string compatível com numero_lote do XML (remove '.0', pega só dígitos)."""
     if pd.isna(v):
         return None
     s = str(v).strip()
@@ -149,11 +143,6 @@ def _norm_lote(v) -> str | None:
     return digits if digits else s
 
 def ler_demonstrativo_pagto_xlsx(source) -> pd.DataFrame:
-    """
-    Lê a planilha 'DemonstrativoAnaliseDeContas' e agrega por (numero_lote, competencia):
-      - valor_apresentado, valor_apurado (liberado), valor_glosa, linhas
-    Retorna colunas: numero_lote | competencia | valor_apresentado | valor_apurado | valor_glosa | linhas
-    """
     df_raw = pd.read_excel(source, sheet_name='DemonstrativoAnaliseDeContas', engine='openpyxl')
 
     mask = df_raw.iloc[:, 0].astype(str).str.strip().eq('CPF/CNPJ')
@@ -189,17 +178,6 @@ def ler_demonstrativo_pagto_xlsx(source) -> pd.DataFrame:
 # Conciliação — chave com separação por TIPO e preferência por LOTE DO ARQUIVO (RECURSO)
 # =========================================================
 def _build_chave_concil(df_xml: pd.DataFrame, demo_agg: pd.DataFrame) -> pd.DataFrame:
-    """
-    Cria as colunas:
-      - numero_lote_norm: normalização do nº do lote vindo do XML
-      - lote_arquivo_norm: nº do lote extraído do nome do arquivo
-      - demo_lote: lote escolhido para procurar no demonstrativo
-           Regra:
-             * Para RECURSO: preferir 'lote_arquivo_norm' se existir no demonstrativo;
-                              senão, tentar heurística startswith; senão, usar numero_lote_norm/arq.
-             * Para demais:  preferir 'numero_lote_norm'; se não existir, tentar heurística startswith com 'lote_arquivo_norm'; por fim 'lote_arquivo_norm'.
-      - chave_concil: f"{demo_lote}__{tipo}"  (garante que RECURSO e FATURAMENTO não se misturem)
-    """
     df = df_xml.copy()
     demo_keys = set(demo_agg['numero_lote'].dropna().astype(str).str.strip()) if not demo_agg.empty else set()
 
@@ -240,12 +218,6 @@ def _build_chave_concil(df_xml: pd.DataFrame, demo_agg: pd.DataFrame) -> pd.Data
 # Baixa por lote — usando (demo_lote, tipo)
 # =========================================================
 def _make_baixa_por_lote(df_xml: pd.DataFrame, demo_agg: pd.DataFrame) -> pd.DataFrame:
-    """
-    Produz tabela de baixa por lote, separando por tipo (faturamento x recurso).
-    - Agrupa XML por chave_concil (demo_lote__tipo)
-    - Faz merge com Demonstrativo pelo demo_lote (mantendo competência do Demonstrativo)
-    - Calcula diffs e flags de conferência
-    """
     if df_xml.empty:
         return pd.DataFrame()
 
@@ -367,7 +339,6 @@ if 'demo_bank' not in st.session_state:
     )
 
 def _agg_demo(df: pd.DataFrame) -> pd.DataFrame:
-    """Garante agregação por (numero_lote, competencia) após concatenação de múltiplos demonstrativos."""
     if df.empty:
         return df
     df = df.copy()
