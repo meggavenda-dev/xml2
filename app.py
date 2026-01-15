@@ -32,124 +32,117 @@ st.caption(f"Extrai nº do lote, protocolo (quando houver), quantidade de guias 
 
 tab1, tab2 = st.tabs(["Upload de XML(s)", "Ler de uma pasta local (clonada do GitHub)"])
 
+
 def xml_editor_ui():
-    """Editor completo de XML: upload, visualização, edição, XPath, inserção, remoção e download."""
-    
+    """Editor completo de XML: upload, visualização, XPath, edição e download."""
     import hashlib
     from lxml import etree
 
-    st.subheader("🛠 Editor de XML (Completo)")
+    st.subheader("🛠 Editor de XML")
 
-    # ====================== ESTADO =========================
+    # Estado inicial
     if "xed_xml_bytes" not in st.session_state:
         st.session_state.xed_xml_bytes = b""
-
     if "xed_filename" not in st.session_state:
         st.session_state.xed_filename = "xml_corrigido.xml"
 
-    # ====================== UPLOAD =========================
-    up = st.file_uploader("Carregar XML para edição", type=["xml"], key="xed_uploader")
+    # Upload
+    up = st.file_uploader("Carregar XML", type=["xml"], key="xed_uploader")
     if up:
         up.seek(0)
         st.session_state.xed_xml_bytes = up.read()
         st.session_state.xed_filename = up.name
         st.success(f"Arquivo carregado: {up.name}")
 
-    # Impede erro se nada foi carregado
+    # Se não carregou nada
     if not st.session_state.xed_xml_bytes:
-        st.info("Envie um XML acima para editar.")
+        st.info("Envie um XML acima.")
         return
 
-    # ====================== HASH ATUAL =====================
-    current_hash = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
-    st.caption(f"Hash SHA-256 atual: `{current_hash}`")
+    # Hash atual
+    hash_atual = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
+    st.caption(f"Hash atual: `{hash_atual}`")
 
-    # ====================== VISUALIZAÇÃO ===================
-    with st.expander("👁 Visualização formatada do XML", expanded=False):
+    # Prévia formatada
+    with st.expander("👁 Prévia do XML"):
         try:
             parser = etree.XMLParser(remove_blank_text=True)
-            root_preview = etree.fromstring(st.session_state.xed_xml_bytes, parser=parser)
+            preview = etree.fromstring(st.session_state.xed_xml_bytes, parser=parser)
             st.text_area(
-                "XML atual:",
-                etree.tostring(root_preview, pretty_print=True, encoding="unicode"),
+                "Prévia:",
+                etree.tostring(preview, pretty_print=True, encoding="unicode"),
                 height=300,
-                key="xed_view_area"
+                key="xed_preview"
             )
         except Exception as e:
-            st.error(f"Erro ao exibir XML: {e}")
+            st.error(f"Erro ao pré-visualizar XML: {e}")
 
-    # ====================== MODO DE EDIÇÃO =================
+    # Editor modo texto
     modo = st.radio(
         "Modo de edição:",
-        ["Visual (XPath guiado)", "Texto (edição bruta)"],
+        ["XPath (visual)", "Texto bruto"],
         horizontal=True,
-        key="xed_mode_selector"
+        key="xed_mode"
     )
 
-    # ====================== EDIÇÃO BRUTA ===================
-    if modo == "Texto (edição bruta)":
-        try:
-            raw_text = etree.tostring(
-                etree.fromstring(st.session_state.xed_xml_bytes),
-                pretty_print=True,
-                encoding="unicode"
-            )
-        except Exception:
-            raw_text = ""
-
-        edited = st.text_area("Edite o XML abaixo:", raw_text, height=350, key="xed_raw_editor")
-
-        if st.button("Aplicar edição bruta", key="xed_apply_raw"):
+    # Modo texto bruto
+    if modo == "Texto bruto":
+        raw = etree.tostring(
+            etree.fromstring(st.session_state.xed_xml_bytes),
+            pretty_print=True,
+            encoding="unicode"
+        )
+        edited = st.text_area("Edite:", raw, height=350, key="xed_raw")
+        if st.button("Salvar edição bruta"):
             try:
-                root_new = etree.fromstring(edited.encode("utf-8"))
+                root_new = etree.fromstring(edited.encode())
                 st.session_state.xed_xml_bytes = etree.tostring(
                     root_new, pretty_print=True, encoding="utf-8", xml_declaration=True
                 )
-                st.success("Edição salva com sucesso!")
+                st.success("XML atualizado!")
+                st.rerun()
             except Exception as e:
                 st.error(f"Erro no XML: {e}")
+        return
 
-        return  # encerra modo texto, não mostra modo visual ao mesmo tempo
-
-    # ====================== EDIÇÃO VIA XPATH ===============
+    # ==================== EDIÇÃO XPATH ====================
     st.markdown("### ✏ Edição via XPath")
 
     ns_default = "ans=http://www.ans.gov.br/padroes/tiss/schemas"
-    ns_text = st.text_area("Namespaces (prefixo=URI):", ns_default, key="xed_ns_text")
-    namespaces = dict(line.split("=", 1) for line in ns_text.splitlines() if "=" in line)
+    ns_text = st.text_area("Namespaces:", ns_default, key="xed_ns")
+    namespaces = dict(
+        line.split("=", 1) for line in ns_text.splitlines() if "=" in line
+    )
 
-    xpath = st.text_input("XPath do nó", ".//ans:nomeBeneficiario", key="xed_xpath_input")
+    xpath = st.text_input("XPath:", ".//ans:nomeBeneficiario", key="xed_xpath")
 
-    # Carregar árvore atual
+    # Recarregar root atual
     parser = etree.XMLParser(remove_blank_text=True)
-    try:
-        root = etree.fromstring(st.session_state.xed_xml_bytes, parser=parser)
-    except Exception as e:
-        st.error(f"Erro ao carregar XML atual: {e}")
-        return
+    root = etree.fromstring(st.session_state.xed_xml_bytes, parser=parser)
 
-
-
-    # Quando o usuário clicar em "Buscar", guardamos apenas os parâmetros da busca
-    if st.button("Buscar nós via XPath", key="xed_search_nodes"):
+    # Buscar nós
+    if st.button("Buscar"):
         st.session_state["xed_last_xpath"] = xpath
-        st.session_state["xed_last_ns_text"] = ns_text
-        st.session_state["xed_search_active"] = True
+        st.session_state["xed_last_ns"] = ns_text
+        st.session_state["xed_search"] = True
 
-    # Reconstituímos os nós SEMPRE a partir do root atual
     nodes = []
-    if st.session_state.get("xed_search_active"):
+    if st.session_state.get("xed_search"):
         try:
-            ns_saved_text = st.session_state.get("xed_last_ns_text", "")
-            ns_saved = dict(line.split("=", 1) for line in ns_saved_text.splitlines() if "=" in line)
+            ns_saved = dict(
+                line.split("=", 1)
+                for line in st.session_state.get("xed_last_ns", "").splitlines()
+                if "=" in line
+            )
             last_xpath = st.session_state.get("xed_last_xpath", "")
-            nodes = root.xpath(last_xpath, namespaces=ns_saved) if last_xpath else []
+            nodes = root.xpath(last_xpath, namespaces=ns_saved)
         except Exception as e:
             st.error(f"Erro de XPath: {e}")
-            st.session_state["xed_search_active"] = False
+            st.session_state["xed_search"] = False
             nodes = []
 
-    st.write(f"Nós encontrados: **{len(nodes)}**")
+    st.write(f"Nós encontrados: {len(nodes)}")
+
 
 
 
