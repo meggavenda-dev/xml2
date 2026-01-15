@@ -1,5 +1,12 @@
-streamlit
-pandas
-openpyxl
-lxml
-hashlib
+# Streamlit e dependências
+streamlit>=1.31,<2
+
+# DataFrame e Excel
+pandas>=2.0,<3
+openpyxl>=3.1,<4
+
+# XML
+lxml>=4.9,<6
+
+# Opcional: se você for ler .xls (Excel antigo 97-2003), inclua:
+# xlrd==2.0.1
