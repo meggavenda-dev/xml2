@@ -12,6 +12,9 @@ from typing import List, Dict, Optional
 
 import pandas as pd
 import streamlit as st
+import hashlib
+from lxml import etree
+
 
 from tiss_parser import (
     parse_tiss_xml,
