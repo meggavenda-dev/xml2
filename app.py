@@ -105,6 +105,7 @@ def xml_editor_ui():
                 st.error(f"Erro no XML: {e}")
         return
 
+    
     # ==================== EDIÇÃO XPATH ====================
     st.markdown("### ✏ Edição via XPath")
 
@@ -146,101 +147,113 @@ def xml_editor_ui():
 
 
 
-    # ====================== EDIÇÃO DE NÓS ==================
-    for idx, node in enumerate(nodes):
-        with st.expander(f"Nó {idx+1}: {node.tag}"):
+  
+# ====================== EDIÇÃO DE NÓS (FORM + XPATH ABSOLUTO) ======================
 
-            # --- Texto -------------------------------
-            txt = st.text_input("Texto do nó:", value=node.text or "", key=f"xed_node_txt_{idx}")
+for idx, node in enumerate(nodes):
+    path_abs = node.getroottree().getpath(node)
 
-            # --- Atributos ---------------------------
-            attrs_text = "\n".join([f"{k}={v}" for k, v in node.attrib.items()])
-            new_attrs_text = st.text_area(
-                "Atributos (chave=valor por linha):",
-                attrs_text,
-                key=f"xed_node_attrs_{idx}"
+    with st.expander(f"Nó {idx+1}: {node.tag} — {path_abs}"):
+
+        with st.form(key=f"xed_form_{idx}"):
+
+            # Texto
+            new_text = st.text_input(
+                "Texto do nó:",
+                value=node.text or "",
+                key=f"xed_text_{idx}"
             )
 
-            if st.button("Salvar alterações neste nó", key=f"xed_save_node_{idx}"):
-                node.text = txt
-                node.attrib.clear()
+            # Atributos
+            attrs = "\n".join(f"{k}={v}" for k, v in node.attrib.items())
+            new_attrs = st.text_area(
+                "Atributos (k=v):",
+                value=attrs,
+                height=120,
+                key=f"xed_attrs_{idx}"
+            )
 
-                for line in new_attrs_text.splitlines():
-                    if "=" in line:
-                        k, v = line.split("=", 1)
-                        node.set(k.strip(), v.strip())
-
-                st.session_state.xed_xml_bytes = etree.tostring(
-                    root, pretty_print=True, encoding="utf-8", xml_declaration=True
-                )
-                st.success("Alterações aplicadas!")
-
-            # --- Adicionar filho ----------------------
+            # Filhos
             child_tag = st.text_input("Tag do filho:", key=f"xed_child_tag_{idx}")
             child_text = st.text_input("Texto do filho:", key=f"xed_child_text_{idx}")
-            child_attrs = st.text_area("Atributos do filho:", key=f"xed_child_attrs_{idx}")
+            child_attrs = st.text_area("Atributos do filho:", "", key=f"xed_child_attrs_{idx}", height=100)
 
-            if st.button("Adicionar filho", key=f"xed_add_child_{idx}"):
-                try:
-                    # Resolver namespace
-                    if ":" in child_tag:
-                        pref, local = child_tag.split(":", 1)
-                        uri = namespaces.get(pref)
-                        tag_qname = f"{{{uri}}}{local}"
-                    else:
-                        tag_qname = child_tag
+            col1, col2, col3 = st.columns([1,1,1])
+            save_btn = col1.form_submit_button("💾 Salvar este nó")
+            add_btn  = col2.form_submit_button("➕ Adicionar filho")
+            del_btn  = col3.form_submit_button("🗑️ Excluir")
 
-                    child = etree.SubElement(node, tag_qname)
-                    child.text = child_text
+            if save_btn or add_btn or del_btn:
+                # Reparse atual
+                parser2 = etree.XMLParser(remove_blank_text=True)
+                root2 = etree.fromstring(st.session_state.xed_xml_bytes, parser=parser2)
 
-                    for line in child_attrs.splitlines():
-                        if "=" in line:
-                            k, v = line.split("=", 1)
-                            child.set(k.strip(), v.strip())
+                # Reconstituir namespaces
+                ns_saved = dict(
+                    line.split("=", 1)
+                    for line in st.session_state.get("xed_last_ns", "").splitlines()
+                    if "=" in line
+                )
 
+                # Reencontrar nó exato
+                target_list = root2.xpath(path_abs, namespaces=ns_saved)
+                target = target_list[0] if target_list else None
+
+                if target is None:
+                    st.error("Nó não encontrado no XML atual.")
+                else:
+                    if save_btn:
+                        target.text = new_text
+                        target.attrib.clear()
+                        for line in new_attrs.splitlines():
+                            if "=" in line:
+                                k, v = line.split("=", 1)
+                                target.set(k.strip(), v.strip())
+
+                    if add_btn:
+                        if ":" in child_tag:
+                            pref, local = child_tag.split(":", 1)
+                            uri = ns_saved.get(pref)
+                            if not uri:
+                                st.error(f"Prefixo '{pref}' não encontrado.")
+                            else:
+                                tag_q = f"{{{uri}}}{local}"
+                        else:
+                            tag_q = child_tag
+
+                        c = etree.SubElement(target, tag_q)
+                        c.text = child_text or ""
+                        for line in child_attrs.splitlines():
+                            if "=" in line:
+                                k, v = line.split("=", 1)
+                                c.set(k.strip(), v.strip())
+
+                    if del_btn:
+                        parent = target.getparent()
+                        if parent is not None:
+                            parent.remove(target)
+
+                    # Salvar no session_state
                     st.session_state.xed_xml_bytes = etree.tostring(
-                        root, pretty_print=True, encoding="utf-8", xml_declaration=True
+                        root2, pretty_print=True, encoding="utf-8", xml_declaration=True
                     )
-                    st.success("Filho adicionado!")
-                except Exception as e:
-                    st.error(f"Erro ao adicionar filho: {e}")
+                    st.success("Alteração aplicada!")
+                    st.rerun()
 
-            # --- Remover nó ---------------------------
-            if st.button("Excluir nó", key=f"xed_delete_node_{idx}"):
-                parent = node.getparent()
-                if parent is not None:
-                    parent.remove(node)
-                    st.session_state.xed_xml_bytes = etree.tostring(
-                        root, pretty_print=True, encoding="utf-8", xml_declaration=True
-                    )
-                    st.warning("Nó removido!")
+   
+ ====================== DOWNLOAD FINAL ======================
+st.markdown("### 💾 Baixar XML atualizado")
 
-    
-    st.markdown("### 🔄 Aplicar alterações gerais")
+new_hash = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
+st.caption(f"Novo hash: `{new_hash}`")
 
-    if st.button("Aplicar alterações ao XML", key="xed_apply_all_changes"):
-        st.session_state.xed_xml_bytes = etree.tostring(
-            root,
-            pretty_print=True,
-            encoding="utf-8",
-            xml_declaration=True
-        )
-        st.success("Todas as alterações foram aplicadas ao XML!")
+st.download_button(
+    "Baixar XML corrigido",
+    data=st.session_state.xed_xml_bytes,
+    file_name=st.session_state.xed_filename.replace(".xml", "_corrigido.xml"),
+    mime="application/xml"
+)
 
-
-    # ====================== DOWNLOAD FINAL ==================
-    st.markdown("### 💾 Baixar XML atualizado")
-
-    new_hash = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
-    st.caption(f"Novo hash SHA-256: `{new_hash}`")
-
-    st.download_button(
-        "Baixar XML corrigido",
-        data=st.session_state.xed_xml_bytes,
-        file_name=st.session_state.xed_filename.replace(".xml", "_corrigido.xml"),
-        mime="application/xml",
-        key="xed_download_btn"
-    )
 
 
 # =========================================================
