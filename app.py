@@ -148,7 +148,7 @@ def xml_editor_ui():
 
 
   
-# ====================== EDIÇÃO DE NÓS (FORM + XPATH ABSOLUTO) ======================
+    # ====================== EDIÇÃO DE NÓS (FORM + XPATH ABSOLUTO) ======================
 
     for idx, node in enumerate(nodes):
         path_abs = node.getroottree().getpath(node)
@@ -241,18 +241,18 @@ def xml_editor_ui():
                         st.rerun()
 
    
- # ====================== DOWNLOAD FINAL ======================
-st.markdown("### 💾 Baixar XML atualizado")
+     # ====================== DOWNLOAD FINAL ======================
+    st.markdown("### 💾 Baixar XML atualizado")
 
-new_hash = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
-st.caption(f"Novo hash: `{new_hash}`")
+    new_hash = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
+    st.caption(f"Novo hash: `{new_hash}`")
 
-st.download_button(
-    "Baixar XML corrigido",
-    data=st.session_state.xed_xml_bytes,
-    file_name=st.session_state.xed_filename.replace(".xml", "_corrigido.xml"),
-    mime="application/xml"
-)
+    st.download_button(
+        "Baixar XML corrigido",
+        data=st.session_state.xed_xml_bytes,
+        file_name=st.session_state.xed_filename.replace(".xml", "_corrigido.xml"),
+        mime="application/xml"
+    )
 
 
 
