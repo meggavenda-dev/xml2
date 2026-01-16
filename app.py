@@ -31,12 +31,61 @@ st.caption(f"Extrai nº do lote, protocolo (quando houver), quantidade de guias 
 
 tab1, tab2 = st.tabs(["Upload de XML(s)", "Ler de uma pasta local (clonada do GitHub)"])
 
+# =========================================================
+# Constantes e Helpers gerais
+# =========================================================
+MAX_UPLOAD_SIZE_MB = 25  # ajuste conforme sua infra
+MAX_HISTORY = 10         # histórico de Undo
 
+def make_xml_parser() -> etree.XMLParser:
+    """Parser seguro e robusto para XML grande, sem rede/entidades externas."""
+    return etree.XMLParser(
+        remove_blank_text=True,
+        resolve_entities=False,
+        no_network=True,
+        huge_tree=True
+    )
+
+def strip_doctype(xml_bytes: bytes) -> bytes:
+    """Remove DOCTYPE para evitar XXE e problemas de validação remota."""
+    return re.sub(rb'<!DOCTYPE[^>]*>', b'', xml_bytes, flags=re.IGNORECASE)
+
+def nsmap_to_text(nsmap: Dict[str, str]) -> str:
+    """
+    Converte o nsmap do documento em texto de namespaces para a UI.
+    Garante a presença de 'ans='.
+    """
+    lines: List[str] = []
+    seen_ans = False
+    for k, v in (nsmap or {}).items():
+        if k:
+            lines.append(f"{k}={v}")
+            if k == "ans":
+                seen_ans = True
+    if not seen_ans:
+        lines.insert(0, "ans=http://www.ans.gov.br/padroes/tiss/schemas")
+    return "\n".join(lines)
+
+# =========================================================
+# Estado global do editor (Undo/Redo / Histórico)
+# =========================================================
+if "xed_history" not in st.session_state:
+    st.session_state.xed_history: List[bytes] = []
+if "xed_future" not in st.session_state:
+    st.session_state.xed_future: List[bytes] = []
+
+def push_history(current: bytes):
+    """Empilha versão atual no histórico (para Undo) e limpa redo."""
+    st.session_state.xed_history.append(current)
+    if len(st.session_state.xed_history) > MAX_HISTORY:
+        st.session_state.xed_history.pop(0)
+    st.session_state.xed_future.clear()
+
+# =========================================================
+# Editor de XML
+# =========================================================
 def xml_editor_ui():
-    """Editor completo de XML: upload, visualização, XPath, edição e download."""
-    import hashlib
-    from lxml import etree
-
+    """Editor completo de XML: upload, visualização, XPath, edição (individual/lote) e download."""
     st.subheader("🛠 Editor de XML")
 
     # Estado inicial
@@ -44,6 +93,8 @@ def xml_editor_ui():
         st.session_state.xed_xml_bytes = b""
     if "xed_filename" not in st.session_state:
         st.session_state.xed_filename = "xml_corrigido.xml"
+    if "xed_fname_base" not in st.session_state:
+        st.session_state.xed_fname_base = None
 
     # Upload (blindado contra reimport após rerun)
     if "xed_source_hash" not in st.session_state:
@@ -54,7 +105,13 @@ def xml_editor_ui():
     up = st.file_uploader("Carregar XML", type=["xml"], key="xed_uploader")
 
     if up is not None:
-        uploaded_bytes = up.getvalue()  # não mexe no ponteiro
+        if up.size > MAX_UPLOAD_SIZE_MB * 1024 * 1024:
+            st.error(f"Arquivo excede {MAX_UPLOAD_SIZE_MB}MB.")
+            st.stop()
+
+        # Limpa DOCTYPE e mantém ponteiro intacto
+        uploaded_bytes_raw = up.getvalue()
+        uploaded_bytes = strip_doctype(uploaded_bytes_raw)
         uploaded_hash = hashlib.sha256(uploaded_bytes).hexdigest()
 
         # Só carrega se for novo ou se ainda não carregamos nada
@@ -63,6 +120,8 @@ def xml_editor_ui():
             st.session_state.xed_filename = up.name
             st.session_state.xed_source_hash = uploaded_hash
             st.session_state.xed_loaded = True
+            # reseta nome base ao do upload
+            st.session_state.xed_fname_base = Path(up.name).stem
             st.success(f"Arquivo carregado: {up.name}")
 
         # Botão para restaurar original do upload
@@ -70,6 +129,8 @@ def xml_editor_ui():
             st.session_state.xed_xml_bytes = uploaded_bytes
             st.session_state.xed_source_hash = uploaded_hash
             st.session_state.xed_loaded = True
+            st.session_state.xed_history.clear()
+            st.session_state.xed_future.clear()
             st.info("XML restaurado a partir do arquivo enviado.")
             st.rerun()
 
@@ -79,7 +140,7 @@ def xml_editor_ui():
         return
 
     # Parse do documento como ÁRVORE (preserva docinfo/encoding)
-    parser_doc = etree.XMLParser(remove_blank_text=True)
+    parser_doc = make_xml_parser()
     try:
         tree = etree.parse(io.BytesIO(st.session_state.xed_xml_bytes), parser_doc)
         root = tree.getroot()
@@ -92,10 +153,26 @@ def xml_editor_ui():
     hash_atual = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
     st.caption(f"Hash atual: `{hash_atual}`")
 
+    # Undo/Redo
+    u_col, r_col = st.columns(2)
+    if u_col.button("↶ Desfazer"):
+        if st.session_state.xed_history:
+            st.session_state.xed_future.append(st.session_state.xed_xml_bytes)
+            st.session_state.xed_xml_bytes = st.session_state.xed_history.pop()
+            st.rerun()
+    if r_col.button("↷ Refazer"):
+        if st.session_state.xed_future:
+            st.session_state.xed_history.append(st.session_state.xed_xml_bytes)
+            st.session_state.xed_xml_bytes = st.session_state.xed_future.pop()
+            st.rerun()
+
     # Prévia formatada (sem estado, sempre reflete 'st.session_state.xed_xml_bytes')
-    with st.expander("👁 Prévia do XML"):
+    with st.expander("👁 Prévia do XML", expanded=False):
         try:
             preview_str = etree.tostring(root, pretty_print=True, encoding="unicode")
+            show_full = st.toggle("Mostrar prévia completa", value=False, key="xed_show_full")
+            if not show_full and len(preview_str) > 50_000:
+                preview_str = preview_str[:50_000] + "\n...\n[Prévia truncada]"
             st.code(preview_str, language="xml")
         except Exception as e:
             st.error(f"Erro ao pré-visualizar XML: {e}")
@@ -114,6 +191,8 @@ def xml_editor_ui():
         edited = st.text_area("Edite:", raw, height=350, key="xed_raw")
         if st.button("Salvar edição bruta"):
             try:
+                # push histórico antes de gravar
+                push_history(st.session_state.xed_xml_bytes)
                 # Reparse a partir do texto editado, preservando a encoding original do documento
                 root_new = etree.fromstring(edited.encode(enc, errors="replace"))
                 buf = io.BytesIO()
@@ -128,11 +207,24 @@ def xml_editor_ui():
     # ==================== EDIÇÃO XPATH ====================
     st.markdown("### ✏ Edição via XPath")
 
-    ns_default = "ans=http://www.ans.gov.br/padroes/tiss/schemas"
+    # Namespaces automáticos a partir do documento (garante 'ans=')
+    ns_default = nsmap_to_text(root.nsmap)
     ns_text = st.text_area("Namespaces:", ns_default, key="xed_ns")
     namespaces = dict(line.split("=", 1) for line in ns_text.splitlines() if "=" in line)
 
-    xpath = st.text_input("XPath:", ".//ans:nomeBeneficiario", key="xed_xpath")
+    # Atalhos úteis
+    with st.expander("🧭 Atalhos de XPath (preenche automaticamente)"):
+        col_atl = st.columns(3)
+        if col_atl[0].button("numeroLote"):
+            st.session_state["xed_xpath"] = ".//ans:prestadorParaOperadora/ans:loteGuias/ans:numeroLote"
+            st.rerun()
+        if col_atl[1].button("valorTotalGeral (1ª guia SADT)"):
+            st.session_state["xed_xpath"] = "(//ans:guiaSP-SADT/ans:valorTotal/ans:valorTotalGeral)[1]"
+            st.rerun()
+        if col_atl[2].button("numeroGuiaPrestador (filtrar por número)"):
+            st.info("Ex.: .//ans:guiaSP-SADT[ans:cabecalhoGuia/ans:numeroGuiaPrestador='8787026']/ans:cabecalhoGuia/ans:numeroGuiaPrestador")
+
+    xpath = st.text_input("XPath:", st.session_state.get("xed_xpath", ".//ans:nomeBeneficiario"), key="xed_xpath")
 
     # Buscar nós
     if st.button("Buscar"):
@@ -157,10 +249,39 @@ def xml_editor_ui():
 
     st.write(f"Nós encontrados: {len(nodes)}")
 
+    # ========== Edição em Lote (todos os nós encontrados) ==========
+    if nodes:
+        st.markdown("#### ✨ Edição em lote (todos os nós encontrados)")
+        bulk_col1, bulk_col2 = st.columns([2, 1])
+        with bulk_col1:
+            bulk_text = st.text_input("Novo texto para TODOS (deixe vazio para não mexer)", key="xed_bulk_text")
+            bulk_attrs = st.text_area("Atributos para TODOS (k=v por linha; deixe vazio para não mexer)", height=100, key="xed_bulk_attrs")
+        with bulk_col2:
+            aplicar_todos = st.button("Aplicar em TODOS os nós encontrados", type="primary", key="xed_apply_all")
+
+        if aplicar_todos:
+            try:
+                push_history(st.session_state.xed_xml_bytes)
+                for n in nodes:
+                    if bulk_text not in (None, ""):
+                        n.text = bulk_text
+                    if bulk_attrs.strip():
+                        n.attrib.clear()
+                        for line in bulk_attrs.splitlines():
+                            if "=" in line:
+                                k, v = line.split("=", 1)
+                                n.set(k.strip(), v.strip())
+                buf = io.BytesIO()
+                tree.write(buf, encoding=enc, xml_declaration=True, pretty_print=True)
+                st.session_state.xed_xml_bytes = buf.getvalue()
+                st.success(f"Aplicado em {len(nodes)} nó(s).")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro na edição em lote: {e}")
+
     # ====================== EDIÇÃO DE NÓS (SEM reparse) ======================
     for idx, node in enumerate(nodes):
         path_abs = node.getroottree().getpath(node)
-
         with st.expander(f"Nó {idx+1}: {node.tag} — {path_abs}"):
             with st.form(key=f"xed_form_{idx}"):
 
@@ -192,6 +313,8 @@ def xml_editor_ui():
 
                 if save_btn or add_btn or del_btn:
                     try:
+                        push_history(st.session_state.xed_xml_bytes)
+
                         # ----> EDITA O PRÓPRIO 'node' EXIBIDO (sem reparse) <----
                         if save_btn:
                             node.text = new_text
@@ -243,10 +366,18 @@ def xml_editor_ui():
     # ====================== DOWNLOAD FINAL ======================
     st.markdown("### 💾 Baixar XML atualizado")
 
+    # Opções de salvamento (nome base)
+    with st.expander("💾 Opções de salvamento"):
+        st.session_state.xed_fname_base = st.text_input(
+            "Nome base do arquivo",
+            value=st.session_state.xed_fname_base or Path(st.session_state.xed_filename).stem,
+            key="xed_fname_base"
+        )
+
     new_hash = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
     st.caption(f"Novo hash: `{new_hash}`")
 
-    file_base = Path(st.session_state.xed_filename).stem
+    file_base = st.session_state.get("xed_fname_base") or Path(st.session_state.xed_filename).stem
     file_name_corrigido = f"{file_base}_corrigido_{new_hash[:8]}.xml"
 
     st.download_button(
@@ -254,14 +385,13 @@ def xml_editor_ui():
         data=st.session_state.xed_xml_bytes,          # bytes atuais
         file_name=file_name_corrigido,                # nome único por conteúdo
         mime="application/xml",
-        key=f"xed_download_{new_hash[:10]}"           # força recriar o widget quando conteúdo muda
+        key=f"xed_download_{new_hash[:10]}"           # força recriar o widget quando o conteúdo muda
     )
 
     # Diagnóstico opcional (pode manter para conferência)
     with st.expander("Diagnóstico rápido (bytes iniciais)"):
         preview_head = st.session_state.xed_xml_bytes[:200]
         st.code(preview_head.decode(errors="replace"))
-
 
 # =========================================================
 # FORMATAÇÃO DE MOEDA (BR)
@@ -287,14 +417,12 @@ def format_currency_br(val) -> str:
     s = f"R$ {inteiro_fmt},{centavos_fmt}"
     return f"-{s}" if neg else s
 
-
 def _df_display_currency(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     dfd = df.copy()
     for c in cols:
         if c in dfd.columns:
             dfd[c] = dfd[c].apply(format_currency_br)
     return dfd
-
 
 # =========================================================
 # Extração "lote" a partir do nome do arquivo
@@ -309,7 +437,6 @@ def extract_lote_from_filename(name: str) -> str | None:
         return m.group(1)
     return None
 
-
 # =========================================================
 # Utils de dataframe/saída
 # =========================================================
@@ -318,7 +445,6 @@ def _to_float(val) -> float:
         return float(Decimal(str(val)))
     except Exception:
         return 0.0
-
 
 def _df_format(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -364,7 +490,6 @@ def _df_format(df: pd.DataFrame) -> pd.DataFrame:
     df = df[cols].sort_values(['numero_lote', 'tipo', 'arquivo'], ignore_index=True)
     return df
 
-
 def _make_agg(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=['numero_lote', 'tipo', 'qtde_arquivos', 'qtde_guias_total', 'valor_total'])
@@ -374,7 +499,6 @@ def _make_agg(df: pd.DataFrame) -> pd.DataFrame:
         valor_total=('valor_total', 'sum')
     ).sort_values(['numero_lote', 'tipo'], ignore_index=True)
     return agg
-
 
 # =========================================================
 # Leitura do Demonstrativo de Pagamento (.xlsx)
@@ -392,7 +516,6 @@ def _norm_lote(v) -> str | None:
         pass
     digits = ''.join(ch for ch in s if ch.isdigit())
     return digits if digits else s
-
 
 def ler_demonstrativo_pagto_xlsx(source) -> pd.DataFrame:
     """
@@ -430,7 +553,6 @@ def ler_demonstrativo_pagto_xlsx(source) -> pd.DataFrame:
           .rename(columns={'Competência': 'competencia'})
     )
     return demo_agg
-
 
 # =========================================================
 # Conciliação — chave com separação por TIPO e preferência por LOTE DO ARQUIVO (RECURSO)
@@ -475,7 +597,6 @@ def _build_chave_concil(df_xml: pd.DataFrame, demo_agg: pd.DataFrame) -> pd.Data
         axis=1
     )
     return df
-
 
 # =========================================================
 # Baixa por lote — usando (demo_lote, tipo)
@@ -529,7 +650,6 @@ def _make_baixa_por_lote(df_xml: pd.DataFrame, demo_agg: pd.DataFrame) -> pd.Dat
     baixa = baixa[[c for c in cols_order if c in baixa.columns]].sort_values(['demo_lote', 'tipo', 'competencia'], ignore_index=True)
     return baixa
 
-
 # =========================================================
 # Export Excel
 # =========================================================
@@ -547,6 +667,7 @@ def _download_excel_button(df_resumo: pd.DataFrame, df_agg: pd.DataFrame, df_ter
             writer, index=False, sheet_name=sheet_name_3
         )
 
+        # --------- Formatações ----------
         def format_currency_sheet(ws, header_row=1, currency_cols=()):
             headers = {ws.cell(row=header_row, column=c).value: c for c in range(1, ws.max_column + 1)}
             numfmt = 'R$ #,##0.00'
@@ -556,13 +677,36 @@ def _download_excel_button(df_resumo: pd.DataFrame, df_agg: pd.DataFrame, df_ter
                     for r in range(header_row + 1, ws.max_row + 1):
                         ws.cell(row=r, column=col_idx).number_format = numfmt
 
+        def freeze_and_resize(ws):
+            # Congela cabeçalho
+            ws.freeze_panes = "A2"
+            # Largura aprox. por maior comprimento de string em cada coluna
+            for col in ws.columns:
+                try:
+                    col_letter = col[0].column_letter
+                except Exception:
+                    continue
+                max_len = 10
+                for cell in col:
+                    val = cell.value
+                    if val is None:
+                        continue
+                    try:
+                        s = str(val)
+                        max_len = max(max_len, len(s))
+                    except Exception:
+                        pass
+                ws.column_dimensions[col_letter].width = min(max_len + 2, 60)
+
         ws = writer.sheets.get("Resumo por arquivo")
         if ws is not None:
             format_currency_sheet(ws, currency_cols=("valor_total", "valor_glosado", "valor_liberado"))
+            freeze_and_resize(ws)
 
         ws = writer.sheets.get("Agregado por lote")
         if ws is not None:
             format_currency_sheet(ws, currency_cols=("valor_total",))
+            freeze_and_resize(ws)
 
         ws = writer.sheets.get("Baixa por lote") or writer.sheets.get("Auditoria")
         if ws is not None:
@@ -573,6 +717,7 @@ def _download_excel_button(df_resumo: pd.DataFrame, df_agg: pd.DataFrame, df_ter
                 ))
             else:
                 format_currency_sheet(ws, currency_cols=("total_tag", "subtotal_itens_proc", "subtotal_itens_outras", "subtotal_itens"))
+            freeze_and_resize(ws)
 
     st.download_button(
         label,
@@ -580,7 +725,6 @@ def _download_excel_button(df_resumo: pd.DataFrame, df_agg: pd.DataFrame, df_ter
         file_name="resumo_xml_tiss.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
 
 def _auditar_alertas(df: pd.DataFrame) -> None:
     if df.empty:
@@ -598,7 +742,6 @@ def _auditar_alertas(df: pd.DataFrame) -> None:
             f"❌ {len(err)} arquivo(s) com erro no parsing. Exemplos: "
             + ", ".join(err['arquivo'].head(5).tolist())
         )
-
 
 # =========================================================
 # 🔒 Banco acumulado de Demonstrativos (session_state)
@@ -627,7 +770,6 @@ def _add_to_demo_bank(demo_new: pd.DataFrame):
 def _clear_demo_bank():
     st.session_state.demo_bank = st.session_state.demo_bank.iloc[0:0]
 
-
 # =========================================================
 # Helpers Auditoria (duplicidade e retorno)
 # =========================================================
@@ -639,7 +781,6 @@ def _build_chave_guia(row: pd.Series) -> Optional[str]:
         return str(row.get('numeroGuiaOrigem') or row.get('numeroGuiaOperadora')).strip() if (row.get('numeroGuiaOrigem') or row.get('numeroGuiaOperadora')) else None
     return None
 
-
 def _parse_date_flex(s: str) -> Optional[datetime]:
     if not s or not isinstance(s, str):
         return None
@@ -650,7 +791,6 @@ def _parse_date_flex(s: str) -> Optional[datetime]:
         except Exception:
             continue
     return None
-
 
 def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> pd.DataFrame:
     if df_a.empty:
@@ -720,7 +860,6 @@ def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> p
         df.at[i, 'status_auditoria'] = " + ".join(status) if status else "OK"
 
     return df
-
 
 # =========================================================
 # Upload
@@ -882,7 +1021,7 @@ with tab1:
                             else:
                                 # Remoção com lxml
                                 try:
-                                    from lxml import etree
+                                    from lxml import etree  # já importado no topo
                                 except Exception:
                                     st.error("Dependência 'lxml' não encontrada. Instale com: pip install lxml")
                                     st.stop()
@@ -893,7 +1032,7 @@ with tab1:
                                 else:
                                     if hasattr(base_file, "seek"):
                                         base_file.seek(0)
-                                    parser = etree.XMLParser(remove_blank_text=True)
+                                    parser = make_xml_parser()
                                     tree_local = etree.parse(base_file, parser)
                                     root_local = tree_local.getroot()
                                     NS = {'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'}
@@ -1009,9 +1148,8 @@ with tab1:
                             df_dup = pd.DataFrame(duplicadas)
                             st.dataframe(df_dup, use_container_width=True)
 
-                            from lxml import etree
+                            parser = make_xml_parser()
                             base_file.seek(0)
-                            parser = etree.XMLParser(remove_blank_text=True)
                             tree_cmp = etree.parse(base_file, parser)
                             root_cmp = tree_cmp.getroot()
 
@@ -1123,9 +1261,9 @@ with tab2:
                     df_keys = _build_chave_concil(df, demo_agg_in_use)
 
                     demo_by_lote = (demo_agg_in_use.groupby('numero_lote', as_index=False)
-                                    .agg(valor_apresentado=('valor_apresentado', 'sum'),
-                                         valor_apurado=('valor_apurado', 'sum'),
-                                         valor_glosa=('valor_glosa', 'sum')))
+                                    .agg(valor_apresentado=('valor_apresentado','sum'),
+                                         valor_apurado=('valor_apurado','sum'),
+                                         valor_glosa=('valor_glosa','sum')))
 
                     map_apres   = dict(zip(demo_by_lote['numero_lote'], demo_by_lote['valor_apresentado']))
                     map_apurado = dict(zip(demo_by_lote['numero_lote'], demo_by_lote['valor_apurado']))
