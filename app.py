@@ -15,7 +15,6 @@ import streamlit as st
 import hashlib
 from lxml import etree
 
-
 from tiss_parser import (
     parse_tiss_xml,
     parse_many_xmls,
@@ -46,8 +45,7 @@ def xml_editor_ui():
     if "xed_filename" not in st.session_state:
         st.session_state.xed_filename = "xml_corrigido.xml"
 
-   
-    # Upload
+    # Upload (blindado contra reimport após rerun)
     if "xed_source_hash" not in st.session_state:
         st.session_state.xed_source_hash = None
     if "xed_loaded" not in st.session_state:
@@ -56,11 +54,10 @@ def xml_editor_ui():
     up = st.file_uploader("Carregar XML", type=["xml"], key="xed_uploader")
 
     if up is not None:
-        # Use getvalue() para não mexer no ponteiro e poder calcular hash sem side-effects
-        uploaded_bytes = up.getvalue()
+        uploaded_bytes = up.getvalue()  # não mexe no ponteiro
         uploaded_hash = hashlib.sha256(uploaded_bytes).hexdigest()
 
-        # Só carrega no estado se for um arquivo novo ou se ainda não carregamos nada
+        # Só carrega se for novo ou se ainda não carregamos nada
         if (not st.session_state.xed_loaded) or (st.session_state.xed_source_hash != uploaded_hash):
             st.session_state.xed_xml_bytes = uploaded_bytes
             st.session_state.xed_filename = up.name
@@ -68,7 +65,7 @@ def xml_editor_ui():
             st.session_state.xed_loaded = True
             st.success(f"Arquivo carregado: {up.name}")
 
-        # Botão opcional para forçar recarregar do upload e DESCARTAR edições
+        # Botão para restaurar original do upload
         if st.button("↩ Recarregar do upload (descarta edições)"):
             st.session_state.xed_xml_bytes = uploaded_bytes
             st.session_state.xed_source_hash = uploaded_hash
@@ -81,22 +78,25 @@ def xml_editor_ui():
         st.info("Envie um XML acima.")
         return
 
+    # Parse do documento como ÁRVORE (preserva docinfo/encoding)
+    parser_doc = etree.XMLParser(remove_blank_text=True)
+    try:
+        tree = etree.parse(io.BytesIO(st.session_state.xed_xml_bytes), parser_doc)
+        root = tree.getroot()
+        enc = (tree.docinfo.encoding or "utf-8")
+    except Exception as e:
+        st.error(f"Erro ao ler XML atual: {e}")
+        return
 
-    # Hash atual
+    # Hash atual (dos BYTES no estado)
     hash_atual = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
     st.caption(f"Hash atual: `{hash_atual}`")
 
-    # Prévia formatada
+    # Prévia formatada (sem estado, sempre reflete 'st.session_state.xed_xml_bytes')
     with st.expander("👁 Prévia do XML"):
         try:
-            parser = etree.XMLParser(remove_blank_text=True)
-            preview = etree.fromstring(st.session_state.xed_xml_bytes, parser=parser)
-            st.text_area(
-                "Prévia:",
-                etree.tostring(preview, pretty_print=True, encoding="unicode"),
-                height=300,
-                key="xed_preview"
-            )
+            preview_str = etree.tostring(root, pretty_print=True, encoding="unicode")
+            st.code(preview_str, language="xml")
         except Exception as e:
             st.error(f"Erro ao pré-visualizar XML: {e}")
 
@@ -108,41 +108,31 @@ def xml_editor_ui():
         key="xed_mode"
     )
 
-    # Modo texto bruto
+    # ================= MODO TEXTO BRUTO =================
     if modo == "Texto bruto":
-        raw = etree.tostring(
-            etree.fromstring(st.session_state.xed_xml_bytes),
-            pretty_print=True,
-            encoding="unicode"
-        )
+        raw = etree.tostring(root, pretty_print=True, encoding="unicode")
         edited = st.text_area("Edite:", raw, height=350, key="xed_raw")
         if st.button("Salvar edição bruta"):
             try:
-                root_new = etree.fromstring(edited.encode())
-                st.session_state.xed_xml_bytes = etree.tostring(
-                    root_new, pretty_print=True, encoding="utf-8", xml_declaration=True
-                )
+                # Reparse a partir do texto editado, preservando a encoding original do documento
+                root_new = etree.fromstring(edited.encode(enc, errors="replace"))
+                buf = io.BytesIO()
+                etree.ElementTree(root_new).write(buf, encoding=enc, xml_declaration=True, pretty_print=True)
+                st.session_state.xed_xml_bytes = buf.getvalue()
                 st.success("XML atualizado!")
                 st.rerun()
             except Exception as e:
                 st.error(f"Erro no XML: {e}")
         return
 
-    
     # ==================== EDIÇÃO XPATH ====================
     st.markdown("### ✏ Edição via XPath")
 
     ns_default = "ans=http://www.ans.gov.br/padroes/tiss/schemas"
     ns_text = st.text_area("Namespaces:", ns_default, key="xed_ns")
-    namespaces = dict(
-        line.split("=", 1) for line in ns_text.splitlines() if "=" in line
-    )
+    namespaces = dict(line.split("=", 1) for line in ns_text.splitlines() if "=" in line)
 
     xpath = st.text_input("XPath:", ".//ans:nomeBeneficiario", key="xed_xpath")
-
-    # Recarregar root atual
-    parser = etree.XMLParser(remove_blank_text=True)
-    root = etree.fromstring(st.session_state.xed_xml_bytes, parser=parser)
 
     # Buscar nós
     if st.button("Buscar"):
@@ -150,7 +140,7 @@ def xml_editor_ui():
         st.session_state["xed_last_ns"] = ns_text
         st.session_state["xed_search"] = True
 
-    nodes = []
+    nodes: List[etree._Element] = []
     if st.session_state.get("xed_search"):
         try:
             ns_saved = dict(
@@ -167,17 +157,11 @@ def xml_editor_ui():
 
     st.write(f"Nós encontrados: {len(nodes)}")
 
-
-
-
-  
-    # ====================== EDIÇÃO DE NÓS (FORM + XPATH ABSOLUTO) ======================
-
+    # ====================== EDIÇÃO DE NÓS (SEM reparse) ======================
     for idx, node in enumerate(nodes):
         path_abs = node.getroottree().getpath(node)
 
         with st.expander(f"Nó {idx+1}: {node.tag} — {path_abs}"):
-
             with st.form(key=f"xed_form_{idx}"):
 
                 # Texto
@@ -201,50 +185,39 @@ def xml_editor_ui():
                 child_text = st.text_input("Texto do filho:", key=f"xed_child_text_{idx}")
                 child_attrs = st.text_area("Atributos do filho:", "", key=f"xed_child_attrs_{idx}", height=100)
 
-                col1, col2, col3 = st.columns([1,1,1])
+                col1, col2, col3 = st.columns([1, 1, 1])
                 save_btn = col1.form_submit_button("💾 Salvar este nó")
-                add_btn  = col2.form_submit_button("➕ Adicionar filho")
-                del_btn  = col3.form_submit_button("🗑️ Excluir")
+                add_btn = col2.form_submit_button("➕ Adicionar filho")
+                del_btn = col3.form_submit_button("🗑️ Excluir")
 
                 if save_btn or add_btn or del_btn:
-                    # Reparse atual
-                    parser2 = etree.XMLParser(remove_blank_text=True)
-                    root2 = etree.fromstring(st.session_state.xed_xml_bytes, parser=parser2)
-
-                    # Reconstituir namespaces
-                    ns_saved = dict(
-                        line.split("=", 1)
-                        for line in st.session_state.get("xed_last_ns", "").splitlines()
-                        if "=" in line
-                    )
-
-                    # Reencontrar nó exato
-                    target_list = root2.xpath(path_abs, namespaces=ns_saved)
-                    target = target_list[0] if target_list else None
-
-                    if target is None:
-                        st.error("Nó não encontrado no XML atual.")
-                    else:
+                    try:
+                        # ----> EDITA O PRÓPRIO 'node' EXIBIDO (sem reparse) <----
                         if save_btn:
-                            target.text = new_text
-                            target.attrib.clear()
+                            node.text = new_text
+                            node.attrib.clear()
                             for line in new_attrs.splitlines():
                                 if "=" in line:
                                     k, v = line.split("=", 1)
-                                    target.set(k.strip(), v.strip())
+                                    node.set(k.strip(), v.strip())
 
                         if add_btn:
+                            ns_saved = dict(
+                                line.split("=", 1)
+                                for line in st.session_state.get("xed_last_ns", "").splitlines()
+                                if "=" in line
+                            )
                             if ":" in child_tag:
                                 pref, local = child_tag.split(":", 1)
                                 uri = ns_saved.get(pref)
                                 if not uri:
                                     st.error(f"Prefixo '{pref}' não encontrado.")
-                                else:
-                                    tag_q = f"{{{uri}}}{local}"
+                                    st.stop()
+                                tag_q = f"{{{uri}}}{local}"
                             else:
                                 tag_q = child_tag
 
-                            c = etree.SubElement(target, tag_q)
+                            c = etree.SubElement(node, tag_q)
                             c.text = child_text or ""
                             for line in child_attrs.splitlines():
                                 if "=" in line:
@@ -252,44 +225,42 @@ def xml_editor_ui():
                                     c.set(k.strip(), v.strip())
 
                         if del_btn:
-                            parent = target.getparent()
+                            parent = node.getparent()
                             if parent is not None:
-                                parent.remove(target)
+                                parent.remove(node)
 
-                        # Salvar no session_state
-                        st.session_state.xed_xml_bytes = etree.tostring(
-                            root2, pretty_print=True, encoding="utf-8", xml_declaration=True
-                        )
+                        # ----> SERIALIZA A MESMA ÁRVORE (tree) PRESERVANDO ENCODING <----
+                        buf = io.BytesIO()
+                        tree.write(buf, encoding=enc, xml_declaration=True, pretty_print=True)
+                        st.session_state.xed_xml_bytes = buf.getvalue()
+
                         st.success("Alteração aplicada!")
                         st.rerun()
 
-   
+                    except Exception as e:
+                        st.error(f"Erro ao aplicar alteração: {e}")
 
     # ====================== DOWNLOAD FINAL ======================
     st.markdown("### 💾 Baixar XML atualizado")
 
-    # Use o hash do conteúdo atual como "versão" do widget e do nome do arquivo
     new_hash = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
     st.caption(f"Novo hash: `{new_hash}`")
 
-    # Gere um nome de arquivo único por versão de conteúdo
     file_base = Path(st.session_state.xed_filename).stem
     file_name_corrigido = f"{file_base}_corrigido_{new_hash[:8]}.xml"
 
-    # IMPORTANTE: mude a identidade do widget via 'key' com o hash
     st.download_button(
         "Baixar XML corrigido",
-        data=st.session_state.xed_xml_bytes,          # sempre os bytes do estado atual
-        file_name=file_name_corrigido,                # nome único para evitar cache do navegador
+        data=st.session_state.xed_xml_bytes,          # bytes atuais
+        file_name=file_name_corrigido,                # nome único por conteúdo
         mime="application/xml",
-        key=f"xed_download_{new_hash[:10]}"           # key muda quando muda o conteúdo
+        key=f"xed_download_{new_hash[:10]}"           # força recriar o widget quando conteúdo muda
     )
 
-    # (Opcional) Mini-diagnóstico na tela para inspecionar os primeiros bytes
+    # Diagnóstico opcional (pode manter para conferência)
     with st.expander("Diagnóstico rápido (bytes iniciais)"):
         preview_head = st.session_state.xed_xml_bytes[:200]
         st.code(preview_head.decode(errors="replace"))
-
 
 
 # =========================================================
@@ -316,12 +287,14 @@ def format_currency_br(val) -> str:
     s = f"R$ {inteiro_fmt},{centavos_fmt}"
     return f"-{s}" if neg else s
 
+
 def _df_display_currency(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     dfd = df.copy()
     for c in cols:
         if c in dfd.columns:
             dfd[c] = dfd[c].apply(format_currency_br)
     return dfd
+
 
 # =========================================================
 # Extração "lote" a partir do nome do arquivo
@@ -334,10 +307,8 @@ def extract_lote_from_filename(name: str) -> str | None:
     m = _LOTE_REGEX.search(name)
     if m:
         return m.group(1)
-    # Fallback opcional: capturar o primeiro número com >=5 dígitos
-    # m2 = re.search(r'(\d{5,})', name)
-    # return m2.group(1) if m2 else None
     return None
+
 
 # =========================================================
 # Utils de dataframe/saída
@@ -347,6 +318,7 @@ def _to_float(val) -> float:
         return float(Decimal(str(val)))
     except Exception:
         return 0.0
+
 
 def _df_format(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -392,6 +364,7 @@ def _df_format(df: pd.DataFrame) -> pd.DataFrame:
     df = df[cols].sort_values(['numero_lote', 'tipo', 'arquivo'], ignore_index=True)
     return df
 
+
 def _make_agg(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=['numero_lote', 'tipo', 'qtde_arquivos', 'qtde_guias_total', 'valor_total'])
@@ -401,6 +374,7 @@ def _make_agg(df: pd.DataFrame) -> pd.DataFrame:
         valor_total=('valor_total', 'sum')
     ).sort_values(['numero_lote', 'tipo'], ignore_index=True)
     return agg
+
 
 # =========================================================
 # Leitura do Demonstrativo de Pagamento (.xlsx)
@@ -418,6 +392,7 @@ def _norm_lote(v) -> str | None:
         pass
     digits = ''.join(ch for ch in s if ch.isdigit())
     return digits if digits else s
+
 
 def ler_demonstrativo_pagto_xlsx(source) -> pd.DataFrame:
     """
@@ -455,6 +430,7 @@ def ler_demonstrativo_pagto_xlsx(source) -> pd.DataFrame:
           .rename(columns={'Competência': 'competencia'})
     )
     return demo_agg
+
 
 # =========================================================
 # Conciliação — chave com separação por TIPO e preferência por LOTE DO ARQUIVO (RECURSO)
@@ -499,6 +475,7 @@ def _build_chave_concil(df_xml: pd.DataFrame, demo_agg: pd.DataFrame) -> pd.Data
         axis=1
     )
     return df
+
 
 # =========================================================
 # Baixa por lote — usando (demo_lote, tipo)
@@ -552,6 +529,7 @@ def _make_baixa_por_lote(df_xml: pd.DataFrame, demo_agg: pd.DataFrame) -> pd.Dat
     baixa = baixa[[c for c in cols_order if c in baixa.columns]].sort_values(['demo_lote', 'tipo', 'competencia'], ignore_index=True)
     return baixa
 
+
 # =========================================================
 # Export Excel
 # =========================================================
@@ -594,7 +572,7 @@ def _download_excel_button(df_resumo: pd.DataFrame, df_agg: pd.DataFrame, df_ter
                     "valor_glosa", "liberado_plus_glosa", "apresentado_diff"
                 ))
             else:
-                format_currency_sheet(ws, currency_cols=("total_tag","subtotal_itens_proc","subtotal_itens_outras","subtotal_itens"))
+                format_currency_sheet(ws, currency_cols=("total_tag", "subtotal_itens_proc", "subtotal_itens_outras", "subtotal_itens"))
 
     st.download_button(
         label,
@@ -602,6 +580,7 @@ def _download_excel_button(df_resumo: pd.DataFrame, df_agg: pd.DataFrame, df_ter
         file_name="resumo_xml_tiss.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
 
 def _auditar_alertas(df: pd.DataFrame) -> None:
     if df.empty:
@@ -620,6 +599,7 @@ def _auditar_alertas(df: pd.DataFrame) -> None:
             + ", ".join(err['arquivo'].head(5).tolist())
         )
 
+
 # =========================================================
 # 🔒 Banco acumulado de Demonstrativos (session_state)
 # =========================================================
@@ -634,10 +614,10 @@ def _agg_demo(df: pd.DataFrame) -> pd.DataFrame:
         return df
     df = df.copy()
     return (df.groupby(['numero_lote', 'competencia'], dropna=False, as_index=False)
-              .agg(valor_apresentado=('valor_apresentado','sum'),
-                   valor_apurado=('valor_apurado','sum'),
-                   valor_glosa=('valor_glosa','sum'),
-                   linhas=('linhas','sum')))
+              .agg(valor_apresentado=('valor_apresentado', 'sum'),
+                   valor_apurado=('valor_apurado', 'sum'),
+                   valor_glosa=('valor_glosa', 'sum'),
+                   linhas=('linhas', 'sum')))
 
 def _add_to_demo_bank(demo_new: pd.DataFrame):
     bank = st.session_state.demo_bank
@@ -646,6 +626,7 @@ def _add_to_demo_bank(demo_new: pd.DataFrame):
 
 def _clear_demo_bank():
     st.session_state.demo_bank = st.session_state.demo_bank.iloc[0:0]
+
 
 # =========================================================
 # Helpers Auditoria (duplicidade e retorno)
@@ -658,6 +639,7 @@ def _build_chave_guia(row: pd.Series) -> Optional[str]:
         return str(row.get('numeroGuiaOrigem') or row.get('numeroGuiaOperadora')).strip() if (row.get('numeroGuiaOrigem') or row.get('numeroGuiaOperadora')) else None
     return None
 
+
 def _parse_date_flex(s: str) -> Optional[datetime]:
     if not s or not isinstance(s, str):
         return None
@@ -668,8 +650,6 @@ def _parse_date_flex(s: str) -> Optional[datetime]:
         except Exception:
             continue
     return None
-
-
 
 
 def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> pd.DataFrame:
@@ -685,7 +665,7 @@ def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> p
     df['status_auditoria'] = ''
 
     # Mapa de duplicidade
-    mapa = {}
+    mapa: Dict[str, List] = {}
     for i, r in df.iterrows():
         k = r.get('chave_guia')
         if not k:
@@ -716,7 +696,9 @@ def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> p
             d0 = datas.get(i)
             if not pac or not med or not d0:
                 continue
-            candidatos = df[(df.index != i) & (df['paciente'].fillna('').str.strip() == pac) & (df['medico'].fillna('').str.strip() == med)]
+            candidatos = df[(df.index != i) &
+                            (df['paciente'].fillna('').str.strip() == pac) &
+                            (df['medico'].fillna('').str.strip() == med)]
             refs = []
             for j, rr in candidatos.iterrows():
                 dj = datas.get(j)
@@ -739,12 +721,13 @@ def _annotate_duplicidade_e_retorno(df_a: pd.DataFrame, prazo_retorno: int) -> p
 
     return df
 
+
 # =========================================================
 # Upload
 # =========================================================
 with tab1:
     files = st.file_uploader("Selecione um ou mais arquivos XML TISS", type=['xml'], accept_multiple_files=True)
-    
+
     if files:
         st.subheader("🔎 Auditoria avançada")
         prazo_retorno = st.number_input("Informe o prazo de retorno (em dias)", min_value=0, value=30, step=1)
@@ -758,7 +741,6 @@ with tab1:
 
             df_a = pd.DataFrame(todas_guias)
             df_a = _annotate_duplicidade_e_retorno(df_a, prazo_retorno)
-
 
             # Exibir colunas relevantes
             cols_to_show = [
@@ -775,11 +757,10 @@ with tab1:
                 mime="text/csv"
             )
 
-
     demo_files = st.file_uploader("Opcional: Demonstrativos (.xlsx)", type=['xlsx'], accept_multiple_files=True, key="demo_upload_tab1")
 
     st.markdown("### Banco de Demonstrativos (acumulado)")
-    bcol1, bcol2, bcol3 = st.columns([1,1,2])
+    bcol1, bcol2, bcol3 = st.columns([1, 1, 2])
     with bcol1:
         add_disabled = not bool(demo_files)
         if st.button("➕ Adicionar demonstrativo(s) ao banco", disabled=add_disabled, use_container_width=True, key="add_demo_tab1"):
@@ -913,8 +894,8 @@ with tab1:
                                     if hasattr(base_file, "seek"):
                                         base_file.seek(0)
                                     parser = etree.XMLParser(remove_blank_text=True)
-                                    tree = etree.parse(base_file, parser)
-                                    root = tree.getroot()
+                                    tree_local = etree.parse(base_file, parser)
+                                    root_local = tree_local.getroot()
                                     NS = {'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'}
 
                                     # Remover por chave + tipo
@@ -927,19 +908,19 @@ with tab1:
                                         if not chave:
                                             continue
                                         if tipo == 'CONSULTA':
-                                            for guia in root.xpath('.//ans:guiaConsulta', namespaces=NS):
+                                            for guia in root_local.xpath('.//ans:guiaConsulta', namespaces=NS):
                                                 num = guia.find('.//ans:numeroGuiaPrestador', namespaces=NS)
                                                 if num is not None and (num.text or '').strip() == str(chave):
                                                     guia.getparent().remove(guia)
                                                     removed += 1
                                         elif tipo == 'SADT':
-                                            for guia in root.xpath('.//ans:guiaSP-SADT', namespaces=NS):
+                                            for guia in root_local.xpath('.//ans:guiaSP-SADT', namespaces=NS):
                                                 num = guia.find('.//ans:cabecalhoGuia/ans:numeroGuiaPrestador', namespaces=NS)
                                                 if num is not None and (num.text or '').strip() == str(chave):
                                                     guia.getparent().remove(guia)
                                                     removed += 1
                                         elif tipo == 'RECURSO':
-                                            for guia in root.xpath('.//ans:recursoGuia', namespaces=NS):
+                                            for guia in root_local.xpath('.//ans:recursoGuia', namespaces=NS):
                                                 num = guia.find('.//ans:numeroGuiaOrigem', namespaces=NS)
                                                 num2 = guia.find('.//ans:numeroGuiaOperadora', namespaces=NS)
                                                 if ((num is not None and (num.text or '').strip() == str(chave)) or
@@ -948,7 +929,7 @@ with tab1:
                                                     removed += 1
 
                                     buffer_xml = io.BytesIO()
-                                    tree.write(buffer_xml, encoding="utf-8", xml_declaration=True, pretty_print=True)
+                                    tree_local.write(buffer_xml, encoding="utf-8", xml_declaration=True, pretty_print=True)
 
                                     st.success(f"{removed} guia(s) removida(s) do XML '{arquivo_base}'.")
                                     st.download_button(
@@ -982,7 +963,7 @@ with tab1:
                             )
 
             # =========================================================
-            # 🧩 Comparar XML e remover guias duplicadas (modo simplificado)
+            # 🧩 Comparar XML e remover guias duplicadas (entre arquivos)
             # =========================================================
             with st.expander("🧩 Comparar XML e remover guias duplicadas (entre arquivos)"):
                 arquivo_base = st.selectbox("Selecione o arquivo base", options=[r['arquivo'] for r in resultados], key="comparar_select")
@@ -1031,37 +1012,38 @@ with tab1:
                             from lxml import etree
                             base_file.seek(0)
                             parser = etree.XMLParser(remove_blank_text=True)
-                            tree = etree.parse(base_file, parser)
-                            root = tree.getroot()
+                            tree_cmp = etree.parse(base_file, parser)
+                            root_cmp = tree_cmp.getroot()
 
-                            def remover_guias(root, duplicadas):
+                            def remover_guias(root_local, duplicadas_local):
                                 NS = {'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'}
-                                for dup in duplicadas:
+                                for dup in duplicadas_local:
                                     tipo = dup['tipo']
-                                    chave = dup.get('numeroGuiaPrestador') or dup.get('numeroGuiaOrigem') or dup.get('numeroGuiaOperadora')
-                                    if not chave:
+                                    chave_local = dup.get('numeroGuiaPrestador') or dup.get('numeroGuiaOrigem') or dup.get('numeroGuiaOperadora')
+                                    if not chave_local:
                                         continue
                                     if tipo == 'CONSULTA':
-                                        for guia in root.xpath('.//ans:guiaConsulta', namespaces=NS):
+                                        for guia in root_local.xpath('.//ans:guiaConsulta', namespaces=NS):
                                             num = guia.find('.//ans:numeroGuiaPrestador', namespaces=NS)
-                                            if num is not None and (num.text or '').strip() == chave:
+                                            if num is not None and (num.text or '').strip() == chave_local:
                                                 guia.getparent().remove(guia)
                                     elif tipo == 'SADT':
-                                        for guia in root.xpath('.//ans:guiaSP-SADT', namespaces=NS):
+                                        for guia in root_local.xpath('.//ans:guiaSP-SADT', namespaces=NS):
                                             num = guia.find('.//ans:cabecalhoGuia/ans:numeroGuiaPrestador', namespaces=NS)
-                                            if num is not None and (num.text or '').strip() == chave:
+                                            if num is not None and (num.text or '').strip() == chave_local:
                                                 guia.getparent().remove(guia)
                                     elif tipo == 'RECURSO':
-                                        for guia in root.xpath('.//ans:recursoGuia', namespaces=NS):
+                                        for guia in root_local.xpath('.//ans:recursoGuia', namespaces=NS):
                                             num = guia.find('.//ans:numeroGuiaOrigem', namespaces=NS)
                                             num2 = guia.find('.//ans:numeroGuiaOperadora', namespaces=NS)
-                                            if ((num is not None and (num.text or '').strip() == chave) or (num2 is not None and (num2.text or '').strip() == chave)):
+                                            if ((num is not None and (num.text or '').strip() == chave_local) or
+                                                (num2 is not None and (num2.text or '').strip() == chave_local)):
                                                 guia.getparent().remove(guia)
-                                return root
+                                return root_local
 
-                            root = remover_guias(root, duplicadas)
+                            root_cmp = remover_guias(root_cmp, duplicadas)
                             buffer_xml = io.BytesIO()
-                            tree.write(buffer_xml, encoding="utf-8", xml_declaration=True, pretty_print=True)
+                            tree_cmp.write(buffer_xml, encoding="utf-8", xml_declaration=True, pretty_print=True)
 
                             st.download_button("Baixar XML sem duplicadas", data=buffer_xml.getvalue(), file_name=f"{arquivo_base.replace('.xml','')}_sem_duplicadas.xml", mime="application/xml", key="comparar_download")
 
@@ -1080,10 +1062,10 @@ with tab1:
             with col3:
                 st.caption("O Excel inclui as abas: Resumo, Agregado e Auditoria/Baixa (moeda BR).")
 
-
 with tab1:
     st.markdown("---")
     xml_editor_ui()
+
 # =========================================================
 # Pasta local (útil para rodar local/clonado)
 # =========================================================
@@ -1100,7 +1082,7 @@ with tab2:
         accept_multiple_files=True,
         key="demo_upload_tab2"
     )
-    lcol1, lcol2 = st.columns([1,1])
+    lcol1, lcol2 = st.columns([1, 1])
     with lcol1:
         add_disabled_local = not bool(demo_files_local)
         if st.button("➕ Adicionar demonstrativo(s) ao banco (aba Pasta)", disabled=add_disabled_local, use_container_width=True, key="add_demo_tab2"):
@@ -1141,9 +1123,9 @@ with tab2:
                     df_keys = _build_chave_concil(df, demo_agg_in_use)
 
                     demo_by_lote = (demo_agg_in_use.groupby('numero_lote', as_index=False)
-                                    .agg(valor_apresentado=('valor_apresentado','sum'),
-                                         valor_apurado=('valor_apurado','sum'),
-                                         valor_glosa=('valor_glosa','sum')))
+                                    .agg(valor_apresentado=('valor_apresentado', 'sum'),
+                                         valor_apurado=('valor_apurado', 'sum'),
+                                         valor_glosa=('valor_glosa', 'sum')))
 
                     map_apres   = dict(zip(demo_by_lote['numero_lote'], demo_by_lote['valor_apresentado']))
                     map_apurado = dict(zip(demo_by_lote['numero_lote'], demo_by_lote['valor_apurado']))
