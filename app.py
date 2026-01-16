@@ -429,6 +429,24 @@ def _df_display_currency(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
             dfd[c] = dfd[c].apply(format_currency_br)
     return dfd
 
+
+def _safe_select_columns(df: pd.DataFrame, cols: list[str], fill_value="") -> pd.DataFrame:
+    """
+    Retorna um DataFrame com as colunas na ordem desejada.
+    - Colunas faltantes são criadas com `fill_value`.
+    - Não lança KeyError.
+    """
+    if df is None or df.empty:
+        # retorna DataFrame vazio com as colunas desejadas
+        return pd.DataFrame(columns=cols)
+    present = [c for c in cols if c in df.columns]
+    missing = [c for c in cols if c not in df.columns]
+    out = df.copy()
+    for m in missing:
+        out[m] = fill_value
+    return out[cols]
+
+
 # =========================================================
 # Extração "lote" a partir do nome do arquivo
 # =========================================================
