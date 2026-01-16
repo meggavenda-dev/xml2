@@ -363,6 +363,139 @@ def xml_editor_ui():
                     except Exception as e:
                         st.error(f"Erro ao aplicar alteração: {e}")
 
+    
+# ====================== REMOVER GUIA POR CHAVE ======================
+    with st.expander("🗑️ Remover guia por chave (rápido)"):
+        st.caption("Informe o TIPO e a CHAVE da guia para remover:")
+        tipo_rem = st.selectbox("Tipo da guia", ["CONSULTA", "SADT", "RECURSO"], key="xed_del_tipo")
+        chave_rem = st.text_input("Chave da guia (nº guia):", key="xed_del_chave",
+                                  placeholder="numeroGuiaPrestador (CONSULTA/SADT) ou numeroGuiaOrigem/Operadora (RECURSO)")
+        if st.button("Remover guia selecionada", key="xed_del_btn"):
+            if not chave_rem.strip():
+                st.warning("Informe a chave da guia.")
+            else:
+                try:
+                    NS = {'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'}
+                    to_remove = []
+                    if tipo_rem == "CONSULTA":
+                        for guia in root.xpath('.//ans:guiaConsulta', namespaces=NS):
+                            num = guia.find('.//ans:numeroGuiaPrestador', namespaces=NS)
+                            if num is not None and (num.text or '').strip() == chave_rem.strip():
+                                to_remove.append(guia)
+                    elif tipo_rem == "SADT":
+                        for guia in root.xpath('.//ans:guiaSP-SADT', namespaces=NS):
+                            num = guia.find('.//ans:cabecalhoGuia/ans:numeroGuiaPrestador', namespaces=NS)
+                            if num is not None and (num.text or '').strip() == chave_rem.strip():
+                                to_remove.append(guia)
+                    elif tipo_rem == "RECURSO":
+                        for guia in root.xpath('.//ans:recursoGuia', namespaces=NS):
+                            n1 = guia.find('.//ans:numeroGuiaOrigem', namespaces=NS)
+                            n2 = guia.find('.//ans:numeroGuiaOperadora', namespaces=NS)
+                            if ((n1 is not None and (n1.text or '').strip() == chave_rem.strip()) or
+                                (n2 is not None and (n2.text or '').strip() == chave_rem.strip())):
+                                to_remove.append(guia)
+
+                    if not to_remove:
+                        st.info("Nenhuma guia encontrada com essa chave.")
+                    else:
+                        # Histórico antes de gravar
+                        push_history(st.session_state.xed_xml_bytes)
+                        for g in to_remove:
+                            parent = g.getparent()
+                            if parent is not None:
+                                parent.remove(g)
+
+                        buf = io.BytesIO()
+                        tree.write(buf, encoding=enc, xml_declaration=True, pretty_print=True)
+                        st.session_state.xed_xml_bytes = buf.getvalue()
+                        st.success(f"{len(to_remove)} guia(s) removida(s).")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao remover guia: {e}")
+
+    
+# ====================== REMOVER GUIA SELECIONANDO DA LISTA ======================
+    with st.expander("🧹 Remover guia (escolhendo da lista do XML atual)"):
+        try:
+            # Monta uma "visão" das guias do XML atual usando o mesmo parser do projeto
+            linhas = audit_por_guia(io.BytesIO(st.session_state.xed_xml_bytes))
+            df_guias = pd.DataFrame(linhas)
+        except Exception as e:
+            df_guias = pd.DataFrame()
+            st.error(f"Não foi possível listar guias deste XML: {e}")
+
+        if df_guias.empty:
+            st.info("Nenhuma guia detectada neste XML ou estrutura não suportada.")
+        else:
+            # Colunas mínimas para chave/identificação
+            for col in ['tipo', 'numeroGuiaPrestador', 'numeroGuiaOrigem', 'numeroGuiaOperadora',
+                        'paciente', 'medico', 'data_atendimento']:
+                if col not in df_guias.columns:
+                    df_guias[col] = ""
+
+            # Rótulo amigável
+            def _label(r):
+                chave = r.get('numeroGuiaPrestador') or r.get('numeroGuiaOrigem') or r.get('numeroGuiaOperadora') or ''
+                pac = r.get('paciente') or ''
+                med = r.get('medico') or ''
+                dt  = r.get('data_atendimento') or ''
+                tp  = r.get('tipo') or ''
+                return f"[{tp}] {chave} • {pac} • {med} • {dt}"
+
+            # Opções como lista (índice → rótulo)
+            labels = {i: _label(r) for i, r in df_guias.iterrows()}
+            idx_escolhido = st.selectbox("Selecione a guia para remover", options=list(labels.keys()),
+                                         format_func=lambda i: labels[i], key="xed_del_pick")
+
+            if st.button("Remover guia selecionada da lista", key="xed_del_pick_btn"):
+                try:
+                    pick = df_guias.loc[idx_escolhido]
+                    tipo = (pick.get('tipo') or '').strip().upper()
+                    chave = (pick.get('numeroGuiaPrestador') or
+                             pick.get('numeroGuiaOrigem') or
+                             pick.get('numeroGuiaOperadora') or '').strip()
+
+                    if not tipo or not chave:
+                        st.warning("Não foi possível determinar a chave/tipo desta guia.")
+                    else:
+                        NS = {'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'}
+                        alvo = None
+                        if tipo == "CONSULTA":
+                            for guia in root.xpath('.//ans:guiaConsulta', namespaces=NS):
+                                num = guia.find('.//ans:numeroGuiaPrestador', namespaces=NS)
+                                if num is not None and (num.text or '').strip() == chave:
+                                    alvo = guia; break
+                        elif tipo == "SADT":
+                            for guia in root.xpath('.//ans:guiaSP-SADT', namespaces=NS):
+                                num = guia.find('.//ans:cabecalhoGuia/ans:numeroGuiaPrestador', namespaces=NS)
+                                if num is not None and (num.text or '').strip() == chave:
+                                    alvo = guia; break
+                        elif tipo == "RECURSO":
+                            for guia in root.xpath('.//ans:recursoGuia', namespaces=NS):
+                                n1 = guia.find('.//ans:numeroGuiaOrigem', namespaces=NS)
+                                n2 = guia.find('.//ans:numeroGuiaOperadora', namespaces=NS)
+                                if ((n1 is not None and (n1.text or '').strip() == chave) or
+                                    (n2 is not None and (n2.text or '').strip() == chave)):
+                                    alvo = guia; break
+
+                        if alvo is None:
+                            st.info("A guia selecionada não foi localizada no XML atual (pode ter sido alterada desde a listagem).")
+                        else:
+                            push_history(st.session_state.xed_xml_bytes)
+                            parent = alvo.getparent()
+                            if parent is not None:
+                                parent.remove(alvo)
+                            buf = io.BytesIO()
+                            tree.write(buf, encoding=enc, xml_declaration=True, pretty_print=True)
+                            st.session_state.xed_xml_bytes = buf.getvalue()
+                            st.success("Guia removida do XML.")
+                            st.rerun()
+
+                except Exception as e:
+                    st.error(f"Erro ao remover: {e}")
+
+
+
 
     # ====================== DOWNLOAD FINAL ======================
     st.markdown("### 💾 Baixar XML atualizado")
