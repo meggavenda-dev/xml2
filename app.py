@@ -264,18 +264,31 @@ def xml_editor_ui():
                         st.rerun()
 
    
-     # ====================== DOWNLOAD FINAL ======================
+
+    # ====================== DOWNLOAD FINAL ======================
     st.markdown("### 💾 Baixar XML atualizado")
 
+    # Use o hash do conteúdo atual como "versão" do widget e do nome do arquivo
     new_hash = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
     st.caption(f"Novo hash: `{new_hash}`")
 
+    # Gere um nome de arquivo único por versão de conteúdo
+    file_base = Path(st.session_state.xed_filename).stem
+    file_name_corrigido = f"{file_base}_corrigido_{new_hash[:8]}.xml"
+
+    # IMPORTANTE: mude a identidade do widget via 'key' com o hash
     st.download_button(
         "Baixar XML corrigido",
-        data=st.session_state.xed_xml_bytes,
-        file_name=st.session_state.xed_filename.replace(".xml", "_corrigido.xml"),
-        mime="application/xml"
+        data=st.session_state.xed_xml_bytes,          # sempre os bytes do estado atual
+        file_name=file_name_corrigido,                # nome único para evitar cache do navegador
+        mime="application/xml",
+        key=f"xed_download_{new_hash[:10]}"           # key muda quando muda o conteúdo
     )
+
+    # (Opcional) Mini-diagnóstico na tela para inspecionar os primeiros bytes
+    with st.expander("Diagnóstico rápido (bytes iniciais)"):
+        preview_head = st.session_state.xed_xml_bytes[:200]
+        st.code(preview_head.decode(errors="replace"))
 
 
 
