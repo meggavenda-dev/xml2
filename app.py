@@ -904,13 +904,28 @@ with tab1:
             df_a = pd.DataFrame(todas_guias)
             df_a = _annotate_duplicidade_e_retorno(df_a, prazo_retorno)
 
+            
+            # Normalização mínima de schema — evita muita dor de cabeça
+            DEFAULT_AUDIT_COLS = [
+                'arquivo', 'tipo', 'numero_lote',
+                'numeroGuiaPrestador', 'numeroGuiaOrigem', 'numeroGuiaOperadora',
+                'paciente', 'medico', 'data_atendimento',
+                'status_auditoria', 'lote_duplicado', 'retorno_ref'
+            ]
+            for col in DEFAULT_AUDIT_COLS:
+                if col not in df_a.columns:
+                    df_a[col] = ""
+
+            st.dataframe(df_a[DEFAULT_AUDIT_COLS], use_container_width=True)
+
+
             # Exibir colunas relevantes
             cols_to_show = [
                 'arquivo', 'tipo', 'numero_lote', 'numeroGuiaPrestador', 'numeroGuiaOrigem', 'numeroGuiaOperadora',
                 'paciente', 'medico', 'data_atendimento',
                 'status_auditoria', 'lote_duplicado', 'retorno_ref'
             ]
-            st.dataframe(df_a[cols_to_show], use_container_width=True)
+            st.dataframe(_safe_select_columns(df_a, cols_to_show), use_container_width=True)
 
             st.download_button(
                 "Baixar Auditoria (CSV)",
@@ -1115,7 +1130,16 @@ with tab1:
                             linhas = audit_por_guia(escolhido)
                             df_a_ind = pd.DataFrame(linhas)
                             df_a_ind = _annotate_duplicidade_e_retorno(df_a_ind, prazo_retorno)
-                            st.dataframe(df_a_ind, use_container_width=True)
+                            
+                            st.dataframe(
+                                _safe_select_columns(df_a_ind, [
+                                'arquivo', 'tipo', 'numero_lote', 'numeroGuiaPrestador',
+                                'numeroGuiaOrigem', 'numeroGuiaOperadora', 'paciente', 'medico',
+                                'data_atendimento', 'status_auditoria', 'lote_duplicado', 'retorno_ref'
+                                ]),
+                                use_container_width=True
+                            )
+
                             st.download_button(
                                 "Baixar auditoria (CSV)",
                                 df_a_ind.to_csv(index=False).encode('utf-8'),
@@ -1169,7 +1193,15 @@ with tab1:
                         else:
                             st.warning(f"{len(duplicadas)} guia(s) duplicada(s) encontrada(s).")
                             df_dup = pd.DataFrame(duplicadas)
-                            st.dataframe(df_dup, use_container_width=True)
+                            
+                            st.dataframe(
+                                _safe_select_columns(df_dup, [
+                                'arquivo', 'tipo', 'numero_lote', 'numeroGuiaPrestador',
+                                'numeroGuiaOrigem', 'numeroGuiaOperadora', 'paciente', 'medico',
+                                'data_atendimento'
+                                ]),
+                                use_container_width=True
+                            )
 
                             parser = make_xml_parser()
                             base_file.seek(0)
