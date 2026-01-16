@@ -414,10 +414,11 @@ def xml_editor_ui():
                     st.error(f"Erro ao remover guia: {e}")
 
     
+
 # ====================== REMOVER GUIA SELECIONANDO DA LISTA ======================
     with st.expander("🧹 Remover guia (escolhendo da lista do XML atual)"):
         try:
-            # Monta uma "visão" das guias do XML atual usando o mesmo parser do projeto
+            # Gera a lista de guias com base no XML atual em memória
             linhas = audit_por_guia(io.BytesIO(st.session_state.xed_xml_bytes))
             df_guias = pd.DataFrame(linhas)
         except Exception as e:
@@ -427,33 +428,92 @@ def xml_editor_ui():
         if df_guias.empty:
             st.info("Nenhuma guia detectada neste XML ou estrutura não suportada.")
         else:
-            # Colunas mínimas para chave/identificação
-            for col in ['tipo', 'numeroGuiaPrestador', 'numeroGuiaOrigem', 'numeroGuiaOperadora',
-                        'paciente', 'medico', 'data_atendimento']:
+            # Normaliza colunas mínimas usadas no rótulo
+            for col in [
+                'tipo', 'numeroGuiaPrestador', 'numeroGuiaOrigem', 'numeroGuiaOperadora',
+                'paciente', 'medico', 'data_atendimento'
+            ]:
                 if col not in df_guias.columns:
                     df_guias[col] = ""
 
-            # Rótulo amigável
-            def _label(r):
-                chave = r.get('numeroGuiaPrestador') or r.get('numeroGuiaOrigem') or r.get('numeroGuiaOperadora') or ''
-                pac = r.get('paciente') or ''
-                med = r.get('medico') or ''
-                dt  = r.get('data_atendimento') or ''
-                tp  = r.get('tipo') or ''
-                return f"[{tp}] {chave} • {pac} • {med} • {dt}"
+            def _numero_e_fonte(r):
+                """
+                Retorna (numero, fonte) para montar o rótulo:
+                - CONSULTA/SADT -> usa numeroGuiaPrestador
+                - RECURSO -> tenta numeroGuiaOrigem, senão numeroGuiaOperadora
+                """
+                tipo = (r.get('tipo') or '').strip().upper()
+                if tipo in ('CONSULTA', 'SADT'):
+                    num = (r.get('numeroGuiaPrestador') or '').strip()
+                    return (num, 'Prestador') if num else ('', '')
+                elif tipo == 'RECURSO':
+                    num_o = (r.get('numeroGuiaOrigem') or '').strip()
+                    num_p = (r.get('numeroGuiaOperadora') or '').strip()
+                    if num_o:
+                        return (num_o, 'Origem')
+                    if num_p:
+                        return (num_p, 'Operadora')
+                    return ('', '')
+                else:
+                    # fallback caso apareça um tipo atípico
+                    num = (r.get('numeroGuiaPrestador') or r.get('numeroGuiaOrigem') or r.get('numeroGuiaOperadora') or '').strip()
+                    return (num, 'Desconhecida' if num else '')
 
-            # Opções como lista (índice → rótulo)
-            labels = {i: _label(r) for i, r in df_guias.iterrows()}
-            idx_escolhido = st.selectbox("Selecione a guia para remover", options=list(labels.keys()),
-                                         format_func=lambda i: labels[i], key="xed_del_pick")
+            # Cria coluna auxiliar para número e fonte (para ordenar e rotular)
+            df_guias = df_guias.copy()
+            df_guias['__numero'], df_guias['__fonte'] = zip(*df_guias.apply(_numero_e_fonte, axis=1))
+
+            # Ordena: tipo -> numero (string; se quiser natural, pode converter para int quando possível)
+            def _numero_sort_key(s):
+                s = str(s or '').strip()
+                # tenta ordenar numericamente; se falhar, fica lexicográfico
+                try:
+                    return (0, int(s))
+                except Exception:
+                    return (1, s)
+
+            df_guias = df_guias.sort_values(
+                by=['tipo', '__numero'],
+                key=lambda col: col.map(_numero_sort_key),
+                ignore_index=True
+            )
+
+            # Rótulo amigável – sempre com número + fonte quando houver
+            def _label(r):
+                tp  = (r.get('tipo') or '').strip().upper()
+                num = (r.get('__numero') or '').strip()
+                src = (r.get('__fonte') or '').strip()
+                pac = (r.get('paciente') or '').strip()
+                med = (r.get('medico') or '').strip()
+                dt  = (r.get('data_atendimento') or '').strip()
+
+                num_part = f"{num} ({src})" if num and src else (num if num else "(sem número)")
+                # Evita labels longos demais; ajuste se necessário
+                return f"[{tp}] {num_part} • {pac} • {med} • {dt}"
+
+            # Monta opções: índice do df -> rótulo
+            labels = {int(i): _label(r) for i, r in df_guias.iterrows()}
+            idx_escolhido = st.selectbox(
+                "Selecione a guia para remover",
+                options=list(labels.keys()),
+                format_func=lambda i: labels[i],
+                key="xed_del_pick"
+            )
+
+            # (Opcional) Mostrar uma prévia tabular curta ao lado da seleção
+            with st.expander("Ver lista de guias (compacta)"):
+                st.dataframe(
+                    df_guias[[
+                        'tipo', '__numero', '__fonte', 'paciente', 'medico', 'data_atendimento'
+                    ]].rename(columns={'__numero': 'numero', '__fonte': 'fonte'}),
+                    use_container_width=True
+                )
 
             if st.button("Remover guia selecionada da lista", key="xed_del_pick_btn"):
                 try:
                     pick = df_guias.loc[idx_escolhido]
                     tipo = (pick.get('tipo') or '').strip().upper()
-                    chave = (pick.get('numeroGuiaPrestador') or
-                             pick.get('numeroGuiaOrigem') or
-                             pick.get('numeroGuiaOperadora') or '').strip()
+                    chave = (pick.get('__numero') or '').strip()
 
                     if not tipo or not chave:
                         st.warning("Não foi possível determinar a chave/tipo desta guia.")
@@ -485,6 +545,7 @@ def xml_editor_ui():
                             parent = alvo.getparent()
                             if parent is not None:
                                 parent.remove(alvo)
+
                             buf = io.BytesIO()
                             tree.write(buf, encoding=enc, xml_declaration=True, pretty_print=True)
                             st.session_state.xed_xml_bytes = buf.getvalue()
@@ -493,8 +554,6 @@ def xml_editor_ui():
 
                 except Exception as e:
                     st.error(f"Erro ao remover: {e}")
-
-
 
 
     # ====================== DOWNLOAD FINAL ======================
