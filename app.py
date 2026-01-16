@@ -46,18 +46,41 @@ def xml_editor_ui():
     if "xed_filename" not in st.session_state:
         st.session_state.xed_filename = "xml_corrigido.xml"
 
+   
     # Upload
+    if "xed_source_hash" not in st.session_state:
+        st.session_state.xed_source_hash = None
+    if "xed_loaded" not in st.session_state:
+        st.session_state.xed_loaded = False
+
     up = st.file_uploader("Carregar XML", type=["xml"], key="xed_uploader")
-    if up:
-        up.seek(0)
-        st.session_state.xed_xml_bytes = up.read()
-        st.session_state.xed_filename = up.name
-        st.success(f"Arquivo carregado: {up.name}")
+
+    if up is not None:
+        # Use getvalue() para não mexer no ponteiro e poder calcular hash sem side-effects
+        uploaded_bytes = up.getvalue()
+        uploaded_hash = hashlib.sha256(uploaded_bytes).hexdigest()
+
+        # Só carrega no estado se for um arquivo novo ou se ainda não carregamos nada
+        if (not st.session_state.xed_loaded) or (st.session_state.xed_source_hash != uploaded_hash):
+            st.session_state.xed_xml_bytes = uploaded_bytes
+            st.session_state.xed_filename = up.name
+            st.session_state.xed_source_hash = uploaded_hash
+            st.session_state.xed_loaded = True
+            st.success(f"Arquivo carregado: {up.name}")
+
+        # Botão opcional para forçar recarregar do upload e DESCARTAR edições
+        if st.button("↩ Recarregar do upload (descarta edições)"):
+            st.session_state.xed_xml_bytes = uploaded_bytes
+            st.session_state.xed_source_hash = uploaded_hash
+            st.session_state.xed_loaded = True
+            st.info("XML restaurado a partir do arquivo enviado.")
+            st.rerun()
 
     # Se não carregou nada
     if not st.session_state.xed_xml_bytes:
         st.info("Envie um XML acima.")
         return
+
 
     # Hash atual
     hash_atual = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
