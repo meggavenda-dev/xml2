@@ -363,21 +363,25 @@ def xml_editor_ui():
                     except Exception as e:
                         st.error(f"Erro ao aplicar alteração: {e}")
 
+
     # ====================== DOWNLOAD FINAL ======================
     st.markdown("### 💾 Baixar XML atualizado")
 
     # Opções de salvamento (nome base)
     with st.expander("💾 Opções de salvamento"):
-        st.session_state.xed_fname_base = st.text_input(
+        default_base = (st.session_state.get("xed_fname_base") 
+                        or Path(st.session_state.xed_filename).stem)
+        base_val = st.text_input(
             "Nome base do arquivo",
-            value=st.session_state.xed_fname_base or Path(st.session_state.xed_filename).stem,
-            key="xed_fname_base"
+            value=default_base,
+            key="xed_fname_base"  # NÃO FAZER atribuição direta a session_state aqui!
         )
 
     new_hash = hashlib.sha256(st.session_state.xed_xml_bytes).hexdigest()
     st.caption(f"Novo hash: `{new_hash}`")
 
-    file_base = st.session_state.get("xed_fname_base") or Path(st.session_state.xed_filename).stem
+    # Use o valor atual do session_state (ou o default)
+    file_base = (st.session_state.get("xed_fname_base") or default_base).strip()
     file_name_corrigido = f"{file_base}_corrigido_{new_hash[:8]}.xml"
 
     st.download_button(
@@ -392,6 +396,7 @@ def xml_editor_ui():
     with st.expander("Diagnóstico rápido (bytes iniciais)"):
         preview_head = st.session_state.xed_xml_bytes[:200]
         st.code(preview_head.decode(errors="replace"))
+
 
 # =========================================================
 # FORMATAÇÃO DE MOEDA (BR)
